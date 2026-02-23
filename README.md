@@ -2,6 +2,14 @@
 
 A **Streamlit** web application for managing P2P lending investment portfolios using **Multi-Criteria Decision Analysis (MCDA)**. It helps you determine optimal fund allocation across platforms, track balances, and monitor deviations from your target portfolio.
 
+## Screenshots
+![alt text](doc/img/image.png)
+![alt text](doc/img/image-1.png)
+![alt text](doc/img/image-2.png)
+![alt text](doc/img/image-3.png)
+![alt text](doc/img/image-4.png)
+![alt text](doc/img/image-5.png)
+
 ## Features
 
 ### Portfolio & Platform Management
