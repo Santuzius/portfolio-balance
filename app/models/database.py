@@ -161,16 +161,30 @@ def _bootstrap(con: duckdb.DuckDBPyConnection) -> None:
             platform_id     INTEGER NOT NULL REFERENCES platforms(id),
             allocation_mode TEXT NOT NULL DEFAULT 'equal'
                             CHECK (allocation_mode IN ('manual','equal')),
+            excluded_statuses TEXT NOT NULL DEFAULT '',
             PRIMARY KEY (platform_id)
         );
     """)
 
-    # Per-country manual allocation percentage
+    # Per-country manual allocation percentage (and optional absolute value)
     con.execute("""
         CREATE TABLE IF NOT EXISTS country_allocation_pcts (
             platform_id     INTEGER NOT NULL REFERENCES platforms(id),
             country         TEXT NOT NULL,
             pct             DOUBLE NOT NULL DEFAULT 0,
+            value           DOUBLE NOT NULL DEFAULT 0,
             PRIMARY KEY (platform_id, country)
+        );
+    """)
+
+    # ----- Auto-score equations for special criteria -----
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS auto_score_equations (
+            portfolio_id    INTEGER NOT NULL REFERENCES portfolios(id),
+            special_type    TEXT NOT NULL
+                            CHECK (special_type IN ('interest_rate','country')),
+            equation        TEXT NOT NULL DEFAULT '',
+            enabled         BOOLEAN NOT NULL DEFAULT FALSE,
+            PRIMARY KEY (portfolio_id, special_type)
         );
     """)

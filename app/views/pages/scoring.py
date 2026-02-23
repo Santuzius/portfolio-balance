@@ -18,29 +18,46 @@ def render(portfolio_id: int) -> None:
     )
 
     criteria = CriteriaVM.list_criteria(portfolio_id)
-    platforms = PortfolioVM.list_platforms(portfolio_id, include_inactive=False)
 
     if criteria.empty:
         st.warning("Define criteria first (⚖️ Criteria & Weighting page).")
         return
+
+    # ── Tabs: Quick Entries | Detailed Entries | Results ────────────
+    tab_quick, tab_detail, tab_results = st.tabs(
+        ["Quick Entries", "Detailed Entries", "Results"]
+    )
+
+    with tab_quick:
+        _render_quick_entries(portfolio_id, criteria)
+
+    with tab_detail:
+        platforms = PortfolioVM.list_platforms(portfolio_id, include_inactive=False)
+        if platforms.empty:
+            st.warning("Add platforms first (🗂️ Portfolios page).")
+        else:
+            _render_detail(portfolio_id, criteria, platforms)
+
+    with tab_results:
+        _render_results(portfolio_id)
+
+
+def _render_quick_entries(
+    portfolio_id: int, criteria: pd.DataFrame
+) -> None:
+    """Compact matrix view for scoring with optional all-platforms toggle."""
+    crit_ids = criteria["id"].tolist()
+    crit_names = criteria["name"].tolist()
+
+    # Checkbox: show all platforms (including inactive)
+    show_all = st.checkbox(
+        "Show all platforms (including inactive)", value=False, key="qe_show_all"
+    )
+    platforms = PortfolioVM.list_platforms(portfolio_id, include_inactive=show_all)
+
     if platforms.empty:
         st.warning("Add platforms first (🗂️ Portfolios page).")
         return
-
-    # ── Evaluation Notes Tab and Matrix Tab ─────────────────────────
-    tab_matrix, tab_detail = st.tabs(["Score Matrix", "Detailed Evaluation"])
-
-    with tab_matrix:
-        _render_matrix(portfolio_id, criteria, platforms)
-
-    with tab_detail:
-        _render_detail(portfolio_id, criteria, platforms)
-
-
-def _render_matrix(portfolio_id: int, criteria: pd.DataFrame, platforms: pd.DataFrame) -> None:
-    """Compact matrix view for scoring."""
-    crit_ids = criteria["id"].tolist()
-    crit_names = criteria["name"].tolist()
 
     st.subheader("Quick Score Entry")
 
@@ -78,11 +95,10 @@ def _render_matrix(portfolio_id: int, criteria: pd.DataFrame, platforms: pd.Data
             st.success("All scores saved!")
             st.rerun()
 
-    # ── Results ─────────────────────────────────────────────────────
-    _show_results(portfolio_id)
 
-
-def _render_detail(portfolio_id: int, criteria: pd.DataFrame, platforms: pd.DataFrame) -> None:
+def _render_detail(
+    portfolio_id: int, criteria: pd.DataFrame, platforms: pd.DataFrame
+) -> None:
     """Per-platform detailed scoring with notes."""
     selected_plat = st.selectbox(
         "Select Platform",
@@ -122,10 +138,8 @@ def _render_detail(portfolio_id: int, criteria: pd.DataFrame, platforms: pd.Data
             st.success(f"Scores for {selected_plat} saved!")
             st.rerun()
 
-    _show_results(portfolio_id)
 
-
-def _show_results(portfolio_id: int) -> None:
+def _render_results(portfolio_id: int) -> None:
     """Display computed MCDA results."""
     st.subheader("MCDA Results")
     allocation = ScoringVM.compute_allocation(portfolio_id)
@@ -152,9 +166,3 @@ def _show_results(portfolio_id: int) -> None:
         use_container_width=True,
         hide_index=True,
     )
-
-    # Show the score matrix as a summary table
-    score_matrix = ScoringVM.get_scores_matrix(portfolio_id)
-    if not score_matrix.empty:
-        st.subheader("Score Overview")
-        st.dataframe(score_matrix.round(2), use_container_width=True)

@@ -22,6 +22,7 @@ from app.models.database import get_connection
 get_connection()
 
 from app.views.components.common import portfolio_selector
+from app.viewmodels.mcda_vm import CriteriaVM
 from app.views.pages import dashboard, portfolios, criteria, scoring, balances, special_criteria
 
 
@@ -42,16 +43,30 @@ portfolio_id = portfolio_selector()
 
 st.sidebar.divider()
 
-PAGES = {
-    "📊 Dashboard": "dashboard",
-    "🗂️ Portfolios & Platforms": "portfolios",
-    "⚖️ Criteria": "criteria",
-    "📐 Weighting Matrix": "weighting",
-    "🏆 Scoring Matrix": "scoring",
-    "💰 Balance Tracking": "balances",
-    "📈 Interest Rates": "interest_rates",
-    "🌍 Country Status": "country_status",
-}
+# Build dynamic page list — Interest Rates / Countries only appear
+# when the corresponding special criterion type is selected.
+PAGES: dict[str, str] = {}
+PAGES["⚖️ Rebalancing"] = "dashboard"
+PAGES["💰 Balance Tracking"] = "balances"
+PAGES["🗂️ Portfolios & Platforms"] = "portfolios"
+PAGES["💎 Criteria"] = "criteria"
+PAGES["📐 Weighting Matrix"] = "weighting"
+PAGES["🏆 Scoring Matrix"] = "scoring"
+
+# Detect special criteria to conditionally show pages
+_has_interest = False
+_has_country = False
+if portfolio_id is not None:
+    _crit_df = CriteriaVM.list_criteria(portfolio_id)
+    if not _crit_df.empty:
+        _special = _crit_df[_crit_df["is_special"] == True]  # noqa: E712
+        _has_interest = not _special[_special["special_type"] == "interest_rate"].empty
+        _has_country = not _special[_special["special_type"] == "country"].empty
+
+if _has_interest:
+    PAGES["⭐📈 Interest Rates"] = "interest_rates"
+if _has_country:
+    PAGES["⭐🌍 Countries"] = "country_status"
 
 page = st.sidebar.radio("Navigation", list(PAGES.keys()), label_visibility="collapsed")
 selected_page = PAGES[page]

@@ -59,8 +59,8 @@ def render(portfolio_id: int) -> None:
     # ── 2. Record New Balance ───────────────────────────────────────
     st.subheader("📝 Record Balance Snapshot")
 
-    if platforms.empty:
-        st.warning("No active platforms to record balances for.")
+    if all_platforms.empty:
+        st.warning("No platforms to record balances for.")
     else:
         with st.form("record_balance_form"):
             col1, col2, col3 = st.columns(3)
@@ -68,7 +68,7 @@ def render(portfolio_id: int) -> None:
             with col1:
                 platform_name = st.selectbox(
                     "Platform",
-                    options=platforms["name"].tolist(),
+                    options=all_platforms["name"].tolist(),
                     key="balance_platform",
                 )
 
@@ -88,7 +88,7 @@ def render(portfolio_id: int) -> None:
                 )
 
             if st.form_submit_button("Record Balance"):
-                platform_id = int(platforms[platforms["name"] == platform_name]["id"].values[0])
+                platform_id = int(all_platforms[all_platforms["name"] == platform_name]["id"].values[0])
                 try:
                     BalanceVM.record_balance(platform_id, month, balance)
                     st.success(f"Balance recorded for {platform_name} on {month}")

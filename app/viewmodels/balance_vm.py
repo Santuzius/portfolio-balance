@@ -132,7 +132,7 @@ class BalanceVM:
 
         merged["target_value"] = merged["pct_allocation"].fillna(0) * effective_total
         merged["latest_balance"] = merged["balance"].fillna(0)
-        merged["deviation"] = merged["latest_balance"] - merged["off_budget_total"] - merged["target_value"]
+        merged["deviation"] = merged["target_value"] - (merged["latest_balance"] - merged["off_budget_total"])
 
         return merged[
             ["platform", "status", "latest_balance", "pct_allocation",
@@ -288,7 +288,13 @@ class CountryStatusVM:
 
 
 class CountryAllocationVM:
-    """Manage per-platform country allocation mode and percentages."""
+    """Manage per-platform country allocation mode and percentages.
+
+    Each platform has:
+      * excluded_statuses – comma-separated status names whose countries get 0%.
+        "Running" is *always* included (never excluded).
+      * allocation_mode – 'equal' or 'manual'  (applied to *included* countries).
+    """
 
     @staticmethod
     def get_mode(platform_id: int) -> str:
@@ -298,7 +304,9 @@ class CountryAllocationVM:
             "SELECT allocation_mode FROM country_allocations WHERE platform_id = ?",
             [int(platform_id)],
         ).fetchone()
-        return row[0] if row else "equal"
+        mode = row[0] if row else "equal"
+        # Migrate legacy 'status' rows transparently
+        return "equal" if mode == "status" else mode
 
     @staticmethod
     def set_mode(platform_id: int, mode: str) -> None:
@@ -312,55 +320,206 @@ class CountryAllocationVM:
         )
 
     @staticmethod
+    def get_excluded_statuses(platform_id: int) -> list[str]:
+        """Return list of excluded country statuses."""
+        con = get_connection()
+        row = con.execute(
+            "SELECT excluded_statuses FROM country_allocations WHERE platform_id = ?",
+            [int(platform_id)],
+        ).fetchone()
+        if row and row[0]:
+            return [s.strip() for s in row[0].split(",") if s.strip()]
+        return []
+
+    @staticmethod
+    def set_excluded_statuses(platform_id: int, excluded: list[str]) -> None:
+        con = get_connection()
+        val = ",".join(excluded)
+        con.execute(
+            """INSERT INTO country_allocations (platform_id, excluded_statuses)
+               VALUES (?, ?)
+               ON CONFLICT (platform_id)
+               DO UPDATE SET excluded_statuses = excluded.excluded_statuses""",
+            [int(platform_id), val],
+        )
+
+    @staticmethod
     def get_pcts(platform_id: int) -> pd.DataFrame:
-        """Return manual allocation pcts for a platform."""
+        """Return manual allocation pcts and values for a platform."""
         con = get_connection()
         return con.execute(
-            "SELECT country, pct FROM country_allocation_pcts WHERE platform_id = ? ORDER BY country",
+            "SELECT country, pct, value FROM country_allocation_pcts WHERE platform_id = ? ORDER BY country",
             [int(platform_id)],
         ).fetchdf()
 
     @staticmethod
-    def save_pct(platform_id: int, country: str, pct: float) -> None:
+    def save_pct(platform_id: int, country: str, pct: float, value: float = 0.0) -> None:
         con = get_connection()
         con.execute(
-            """INSERT INTO country_allocation_pcts (platform_id, country, pct)
-               VALUES (?, ?, ?)
+            """INSERT INTO country_allocation_pcts (platform_id, country, pct, value)
+               VALUES (?, ?, ?, ?)
                ON CONFLICT (platform_id, country)
-               DO UPDATE SET pct = excluded.pct""",
-            [int(platform_id), country, float(pct)],
+               DO UPDATE SET pct = excluded.pct, value = excluded.value""",
+            [int(platform_id), country, float(pct), float(value)],
         )
+
+    @staticmethod
+    def included_countries(platform_id: int) -> pd.DataFrame:
+        """Return only countries whose status is NOT excluded.
+
+        Running is always included regardless of the exclusion list.
+        """
+        from app.viewmodels.balance_vm import CountryStatusVM
+
+        countries = CountryStatusVM.list_statuses(platform_id)
+        if countries.empty:
+            return countries
+        excluded = set(CountryAllocationVM.get_excluded_statuses(platform_id))
+        excluded.discard("Running")
+        return countries[~countries["status"].isin(excluded)]
 
     @staticmethod
     def compute_allocation(platform_id: int) -> pd.DataFrame:
         """Compute country allocation for a platform.
 
+        1. Filter countries by excluded statuses.
+        2. Apply equal or manual allocation to the remaining ones.
+
         Returns DataFrame with columns: country, pct
         """
         from app.viewmodels.balance_vm import CountryStatusVM
 
-        mode = CountryAllocationVM.get_mode(platform_id)
-        countries = CountryStatusVM.list_statuses(platform_id)
-        if countries.empty:
+        all_countries = CountryStatusVM.list_statuses(platform_id)
+        if all_countries.empty:
             return pd.DataFrame(columns=["country", "pct"])
 
-        if mode == "manual":
+        excluded = set(CountryAllocationVM.get_excluded_statuses(platform_id))
+        excluded.discard("Running")
+        included = all_countries[~all_countries["status"].isin(excluded)]
+        mode = CountryAllocationVM.get_mode(platform_id)
+
+        # Build result – excluded countries always get 0%
+        result = []
+
+        if mode == "manual" and not included.empty:
             manual = CountryAllocationVM.get_pcts(platform_id)
-            if manual.empty:
-                # Fall back to equal
-                n = len(countries)
-                return pd.DataFrame({
-                    "country": countries["country"].tolist(),
-                    "pct": [100.0 / n] * n,
+            pct_map = dict(zip(manual["country"], manual["pct"])) if not manual.empty else {}
+            included_set = set(included["country"].tolist())
+            for _, row in all_countries.iterrows():
+                c = row["country"]
+                result.append({
+                    "country": c,
+                    "pct": float(pct_map.get(c, 0)) if c in included_set else 0.0,
                 })
-            # Merge manual pcts with countries
-            merged = countries[["country"]].merge(manual, on="country", how="left")
-            merged["pct"] = merged["pct"].fillna(0)
-            return merged[["country", "pct"]]
         else:
-            # Equal allocation
-            n = len(countries)
-            return pd.DataFrame({
-                "country": countries["country"].tolist(),
-                "pct": [100.0 / n] * n,
-            })
+            # Equal allocation among included countries
+            included_set = set(included["country"].tolist())
+            n = len(included)
+            eq_pct = 100.0 / n if n > 0 else 0.0
+            for _, row in all_countries.iterrows():
+                result.append({
+                    "country": row["country"],
+                    "pct": eq_pct if row["country"] in included_set else 0.0,
+                })
+
+        return pd.DataFrame(result)
+
+
+class AutoScoreVM:
+    """Manage and compute auto-score equations for special criteria."""
+
+    DEFAULT_EQUATIONS = {
+        "interest_rate": "max(0, min(10, 5 + (10 / (max_rate - min_rate)) * (rate - avg_rate)))",
+        "country": "min(10, count * 1.5)",
+    }
+
+    @staticmethod
+    def get_equation(portfolio_id: int, special_type: str) -> tuple[str, bool]:
+        """Return (equation_str, enabled)."""
+        con = get_connection()
+        row = con.execute(
+            "SELECT equation, enabled FROM auto_score_equations WHERE portfolio_id = ? AND special_type = ?",
+            [int(portfolio_id), special_type],
+        ).fetchone()
+        if row:
+            eq = row[0] if row[0] else AutoScoreVM.DEFAULT_EQUATIONS.get(special_type, "")
+            return eq, bool(row[1])
+        return AutoScoreVM.DEFAULT_EQUATIONS.get(special_type, ""), False
+
+    @staticmethod
+    def save_equation(portfolio_id: int, special_type: str, equation: str, enabled: bool) -> None:
+        con = get_connection()
+        con.execute(
+            """INSERT INTO auto_score_equations (portfolio_id, special_type, equation, enabled)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT (portfolio_id, special_type)
+               DO UPDATE SET equation = excluded.equation, enabled = excluded.enabled""",
+            [int(portfolio_id), special_type, equation, enabled],
+        )
+
+    @staticmethod
+    def compute_interest_rate_scores(portfolio_id: int, equation: str) -> dict[int, float]:
+        """Compute interest rate scores for all Running platforms.
+
+        Returns {platform_id: score}.
+        Available variables in equation: rate, min_rate, max_rate, avg_rate.
+        """
+        from app.viewmodels.balance_vm import InterestRateVM
+        from app.viewmodels.portfolio_vm import PortfolioVM
+
+        platforms = PortfolioVM.list_platforms(portfolio_id, include_inactive=False)
+        rates_df = InterestRateVM.get_rates(portfolio_id)
+        # Only Running platforms
+        running_ids = set(int(x) for x in platforms[platforms["status"] == "Running"]["id"].tolist())
+        rates_df = rates_df[rates_df["platform_id"].apply(lambda x: int(x) in running_ids)]
+        active_rates = rates_df[rates_df["estimated_rate"] > 0]["estimated_rate"]
+
+        if active_rates.empty:
+            return {}
+
+        min_rate = float(active_rates.min())
+        max_rate = float(active_rates.max())
+        avg_rate = float(active_rates.mean())
+
+        results = {}
+        for _, r in rates_df.iterrows():
+            pid = int(r["platform_id"])
+            rate = float(r["estimated_rate"])
+            try:
+                score = eval(equation, {"__builtins__": {}}, {
+                    "rate": rate, "min_rate": min_rate, "max_rate": max_rate,
+                    "avg_rate": avg_rate, "min": min, "max": max, "abs": abs,
+                })
+                results[pid] = float(max(0, min(10, score)))
+            except Exception:
+                results[pid] = 0.0
+        return results
+
+    @staticmethod
+    def compute_country_scores(portfolio_id: int, equation: str) -> dict[int, float]:
+        """Compute country count scores for all Running platforms.
+
+        Only countries whose status is *not* excluded are counted.
+
+        Returns {platform_id: score}.
+        Available variables in equation: count (number of included countries).
+        """
+        from app.viewmodels.balance_vm import CountryAllocationVM
+        from app.viewmodels.portfolio_vm import PortfolioVM
+
+        platforms = PortfolioVM.list_platforms(portfolio_id, include_inactive=False)
+        running = platforms[platforms["status"] == "Running"]
+
+        results = {}
+        for _, plat in running.iterrows():
+            pid = int(plat["id"])
+            included = CountryAllocationVM.included_countries(pid)
+            count = len(included)
+            try:
+                score = eval(equation, {"__builtins__": {}}, {
+                    "count": count, "min": min, "max": max, "abs": abs,
+                })
+                results[pid] = float(max(0, min(10, score)))
+            except Exception:
+                results[pid] = 0.0
+        return results

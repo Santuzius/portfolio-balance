@@ -1,4 +1,4 @@
-"""Dashboard page – main overview with deviation analysis."""
+"""Rebalancing page – main overview with deviation analysis."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from app.views.components.common import status_badge, PLATFORM_STATUSES
 
 
 def render(portfolio_id: int) -> None:
-    st.header("📊 Dashboard")
+    st.header("⚖️ Rebalancing")
 
     allocation = ScoringVM.compute_allocation(portfolio_id)
 
@@ -60,7 +60,10 @@ def render(portfolio_id: int) -> None:
 
     with col_pie1:
         if not deviation.empty:
-            cur = deviation[deviation["latest_balance"] > 0].copy()
+            cur = deviation[
+                (deviation["latest_balance"] > 0) &
+                (deviation["status"].isin(rebalance_statuses))
+            ].copy()
             if not cur.empty:
                 fig_cur = px.pie(
                     cur, values="latest_balance", names="platform",
@@ -87,8 +90,9 @@ def render(portfolio_id: int) -> None:
 
     # ── Deviation Table ─────────────────────────────────────────────
     st.subheader("Current Deviation")
-    if not deviation.empty:
-        display_df = deviation.copy()
+    rebal_dev = deviation[deviation["status"].isin(rebalance_statuses)] if not deviation.empty else deviation
+    if not rebal_dev.empty:
+        display_df = rebal_dev.copy()
         display_df["Status"] = display_df["status"].apply(status_badge)
         display_df["Balance €"] = display_df["latest_balance"].round(2)
         display_df["Target €"] = display_df["target_value"].round(2)
@@ -125,7 +129,7 @@ def render(portfolio_id: int) -> None:
         )
         st.plotly_chart(fig_bar, use_container_width=True)
 
-    # ── Scoring Summary Table ───────────────────────────────────────
+    # ── Scoring Summary Table ───────────────────────────────────────────────
     st.subheader("MCDA Scores")
     if not allocation.empty:
         score_df = allocation[["platform", "status", "total_weighted_score", "pct_allocation"]].copy()
