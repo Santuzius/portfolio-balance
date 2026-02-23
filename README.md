@@ -91,14 +91,6 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### Seed Data (Optional)
-
-To populate the database with sample data from the included FODS spreadsheet:
-
-```bash
-python -m app.seed
-```
-
 ### Run
 
 ```bash
