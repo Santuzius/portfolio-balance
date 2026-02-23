@@ -1,0 +1,176 @@
+"""
+Database layer – DuckDB-backed persistence for Portfolio Balance.
+
+All tables are created idempotently (CREATE TABLE IF NOT EXISTS).
+"""
+
+from __future__ import annotations
+
+import duckdb
+from pathlib import Path
+
+DB_PATH = Path(__file__).resolve().parent.parent / "portfolio_balance.duckdb"
+
+_CONNECTION: duckdb.DuckDBPyConnection | None = None
+
+
+def get_connection() -> duckdb.DuckDBPyConnection:
+    """Return a module-level persistent connection (singleton)."""
+    global _CONNECTION
+    if _CONNECTION is None:
+        _CONNECTION = duckdb.connect(str(DB_PATH))
+        _bootstrap(_CONNECTION)
+    return _CONNECTION
+
+
+def _bootstrap(con: duckdb.DuckDBPyConnection) -> None:
+    """Create schema if it doesn't exist yet."""
+
+    con.execute("""
+        CREATE SEQUENCE IF NOT EXISTS seq_portfolio START 1;
+        CREATE TABLE IF NOT EXISTS portfolios (
+            id              INTEGER DEFAULT nextval('seq_portfolio') PRIMARY KEY,
+            name            TEXT NOT NULL UNIQUE,
+            status          TEXT NOT NULL DEFAULT 'Running'
+                            CHECK (status IN ('Running','Dissaving','Defaulted','Closed')),
+            created_at      TIMESTAMP DEFAULT current_timestamp
+        );
+    """)
+
+    con.execute("""
+        CREATE SEQUENCE IF NOT EXISTS seq_platform START 1;
+        CREATE TABLE IF NOT EXISTS platforms (
+            id              INTEGER DEFAULT nextval('seq_platform') PRIMARY KEY,
+            portfolio_id    INTEGER NOT NULL REFERENCES portfolios(id),
+            name            TEXT NOT NULL,
+            status          TEXT NOT NULL DEFAULT 'Running'
+                            CHECK (status IN ('Running','Dissaving','Defaulted','Closed')),
+            UNIQUE (portfolio_id, name)
+        );
+    """)
+
+    # ----- MCDA criteria (per portfolio) -----
+    con.execute("""
+        CREATE SEQUENCE IF NOT EXISTS seq_criterion START 1;
+        CREATE TABLE IF NOT EXISTS criteria (
+            id              INTEGER DEFAULT nextval('seq_criterion') PRIMARY KEY,
+            portfolio_id    INTEGER NOT NULL REFERENCES portfolios(id),
+            name            TEXT NOT NULL,
+            display_order   INTEGER NOT NULL DEFAULT 0,
+            is_special      BOOLEAN NOT NULL DEFAULT FALSE,
+            special_type    TEXT DEFAULT NULL
+                            CHECK (special_type IS NULL
+                                   OR special_type IN ('interest_rate','country')),
+            UNIQUE (portfolio_id, name)
+        );
+    """)
+
+    # ----- Pairwise comparison (weighting matrix) -----
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS pairwise_comparisons (
+            portfolio_id    INTEGER NOT NULL REFERENCES portfolios(id),
+            criterion_row   INTEGER NOT NULL REFERENCES criteria(id),
+            criterion_col   INTEGER NOT NULL REFERENCES criteria(id),
+            value           INTEGER NOT NULL CHECK (value IN (0,1,2)),
+            PRIMARY KEY (portfolio_id, criterion_row, criterion_col)
+        );
+    """)
+
+    # ----- Evaluation / Scoring of each platform per criterion -----
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS scores (
+            platform_id     INTEGER NOT NULL REFERENCES platforms(id),
+            criterion_id    INTEGER NOT NULL REFERENCES criteria(id),
+            score           DOUBLE NOT NULL DEFAULT 0,
+            note            TEXT DEFAULT '',
+            PRIMARY KEY (platform_id, criterion_id)
+        );
+    """)
+
+    # ----- Monthly balance snapshots -----
+    con.execute("""
+        CREATE SEQUENCE IF NOT EXISTS seq_snapshot START 1;
+        CREATE TABLE IF NOT EXISTS balance_snapshots (
+            id              INTEGER DEFAULT nextval('seq_snapshot') PRIMARY KEY,
+            platform_id     INTEGER NOT NULL REFERENCES platforms(id),
+            month           DATE NOT NULL,
+            balance         DOUBLE NOT NULL DEFAULT 0,
+            UNIQUE (platform_id, month)
+        );
+    """)
+
+    # ----- Loan originators (per platform) -----
+    con.execute("""
+        CREATE SEQUENCE IF NOT EXISTS seq_originator START 1;
+        CREATE TABLE IF NOT EXISTS loan_originators (
+            id              INTEGER DEFAULT nextval('seq_originator') PRIMARY KEY,
+            platform_id     INTEGER NOT NULL REFERENCES platforms(id),
+            country         TEXT NOT NULL,
+            originator_name TEXT NOT NULL DEFAULT '',
+            num_loans       DOUBLE NOT NULL DEFAULT 0,
+            note            TEXT DEFAULT '',
+            UNIQUE (platform_id, country, originator_name)
+        );
+    """)
+
+    # ----- Off-budget pockets -----
+    con.execute("""
+        CREATE SEQUENCE IF NOT EXISTS seq_pocket START 1;
+        CREATE TABLE IF NOT EXISTS off_budget_pockets (
+            id              INTEGER DEFAULT nextval('seq_pocket') PRIMARY KEY,
+            platform_id     INTEGER NOT NULL REFERENCES platforms(id),
+            name            TEXT NOT NULL,
+            amount          DOUBLE NOT NULL DEFAULT 0,
+            note            TEXT DEFAULT ''
+        );
+    """)
+
+    # ----- Interest rates (special criterion data) -----
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS interest_rates (
+            platform_id     INTEGER NOT NULL REFERENCES platforms(id) PRIMARY KEY,
+            estimated_rate  DOUBLE NOT NULL DEFAULT 0
+        );
+    """)
+
+    # ----- Country status (special criterion data) -----
+    # Statuses ordered by priority (best first):
+    #   Separated, Running, Being Relocated, To Relocate, High Supply,
+    #   Possible, To Be Tested, Low Supply Active, Low Supply Inactive,
+    #   Risky, Filtered Out
+    con.execute("""
+        CREATE SEQUENCE IF NOT EXISTS seq_country_status START 1;
+        CREATE TABLE IF NOT EXISTS country_statuses (
+            id              INTEGER DEFAULT nextval('seq_country_status') PRIMARY KEY,
+            platform_id     INTEGER REFERENCES platforms(id),
+            country         TEXT NOT NULL,
+            status          TEXT NOT NULL DEFAULT 'Possible'
+                            CHECK (status IN (
+                                'Separated','Running','Being Relocated','To Relocate',
+                                'High Supply','Possible','To Be Tested',
+                                'Low Supply Active','Low Supply Inactive',
+                                'Risky','Filtered Out')),
+            note            TEXT DEFAULT '',
+            UNIQUE (platform_id, country)
+        );
+    """)
+
+    # ----- Country allocation per platform -----
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS country_allocations (
+            platform_id     INTEGER NOT NULL REFERENCES platforms(id),
+            allocation_mode TEXT NOT NULL DEFAULT 'equal'
+                            CHECK (allocation_mode IN ('manual','equal')),
+            PRIMARY KEY (platform_id)
+        );
+    """)
+
+    # Per-country manual allocation percentage
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS country_allocation_pcts (
+            platform_id     INTEGER NOT NULL REFERENCES platforms(id),
+            country         TEXT NOT NULL,
+            pct             DOUBLE NOT NULL DEFAULT 0,
+            PRIMARY KEY (platform_id, country)
+        );
+    """)
