@@ -2,24 +2,25 @@
 
 A **Streamlit** web application for managing P2P lending investment portfolios using **Multi-Criteria Decision Analysis (MCDA)**. It helps determine optimal fund allocation across platforms, track balances, and monitor deviations from your target portfolio.
 
-## Screenshots
+## Features
+
+- **Rebalancing dashboard** — current vs target pie charts, deviation bar chart, KPI metrics, off-budget pockets
 ![alt text](doc/img/image.png)
+- **Portfolio & platform management** with status tracking (Running / Dissaving / Defaulted / Closed)
+- **MCDA allocation** — custom criteria, pairwise weighting matrix, 0–10 scoring per platform
 ![alt text](doc/img/image-1.png)
 ![alt text](doc/img/image-2.png)
 ![alt text](doc/img/image-3.png)
-![alt text](doc/img/image-4.png)
-![alt text](doc/img/image-5.png)
-
-## Features
-
-- **Portfolio & platform management** with status tracking (Running / Dissaving / Defaulted / Closed)
-- **MCDA allocation** — custom criteria, pairwise weighting matrix, 0–10 scoring per platform
-- **Rebalancing dashboard** — current vs target pie charts, deviation bar chart, KPI metrics, off-budget pockets
 - **Balance tracking** — snapshots per platform & date, history with deletion
+![alt text](doc/img/image-4.png)
 - **Interest rate comparison** — bar chart with min/avg/max stats
+![alt text](doc/img/image-6.png)
 - **Loan originator tracking** — per-platform originators with country, loan count, 11 priority-ordered statuses; allocation (manual or equal)
-- **Country status management** — color-coded indicators, country flags, per-platform allocation (manual or equal), fund distribution chart, cross-platform status matrix; country inheritance from originator data
+![alt text](doc/img/image-7.png)
+- **Country status management** — color-coded indicators, per-platform allocation (manual or equal), fund distribution chart, cross-platform status matrix; country inheritance from originator data
+![alt text](doc/img/image-8.png)
 - **Auto-score equations** — configurable formulas for interest-rate, country-count, and originator-count criteria
+![alt text](doc/img/image-9.png)
 
 ## Architecture
 
