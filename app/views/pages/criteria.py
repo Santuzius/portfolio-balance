@@ -5,11 +5,28 @@ from __future__ import annotations
 import streamlit as st
 import pandas as pd
 from app.viewmodels.mcda_vm import CriteriaVM
-from app.models.database import get_connection
 
 
 SPECIAL_TYPES = [None, "interest_rate", "country"]
 SPECIAL_LABELS = {"interest_rate": "Interest Rate", "country": "Country", None: "None"}
+
+
+def page() -> None:
+    """st.navigation entry-point."""
+    portfolio_id = st.session_state.get("portfolio_id")
+    if portfolio_id is None:
+        st.info("👈 Select or create a portfolio to get started.")
+        return
+    render(portfolio_id)
+
+
+def page_weighting() -> None:
+    """st.navigation entry-point for weighting matrix."""
+    portfolio_id = st.session_state.get("portfolio_id")
+    if portfolio_id is None:
+        st.info("👈 Select or create a portfolio to get started.")
+        return
+    render_weighting(portfolio_id)
 
 
 def render(portfolio_id: int) -> None:
@@ -87,11 +104,7 @@ def _render_weighting(portfolio_id: int) -> None:
         "The mirror cell is filled automatically."
     )
 
-    con = get_connection()
-    criteria = con.execute(
-        "SELECT id, name FROM criteria WHERE portfolio_id = ? ORDER BY display_order",
-        [portfolio_id],
-    ).fetchdf()
+    criteria = CriteriaVM.list_criteria(portfolio_id)
 
     if len(criteria) < 2:
         st.info("Need at least 2 criteria to build a weighting matrix.")
@@ -102,13 +115,7 @@ def _render_weighting(portfolio_id: int) -> None:
     n = len(ids)
 
     # Load existing comparisons
-    existing = {}
-    rows = con.execute(
-        "SELECT criterion_row, criterion_col, value FROM pairwise_comparisons WHERE portfolio_id = ?",
-        [portfolio_id],
-    ).fetchdf()
-    for _, r in rows.iterrows():
-        existing[(r["criterion_row"], r["criterion_col"])] = int(r["value"])
+    existing = CriteriaVM.get_pairwise_values_dict(portfolio_id)
 
     # Build the upper-triangle form
     with st.form("pairwise_form"):
@@ -156,4 +163,4 @@ def _render_weighting(portfolio_id: int) -> None:
         display = weights[["name", "raw_sum", "weight_factor"]].rename(
             columns={"name": "Criterion", "raw_sum": "Raw Sum", "weight_factor": "Weight Factor"}
         )
-        st.dataframe(display, use_container_width=True, hide_index=True)
+        st.dataframe(display, width="stretch", hide_index=True)

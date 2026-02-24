@@ -10,6 +10,15 @@ from app.viewmodels.balance_vm import BalanceVM
 from app.viewmodels.portfolio_vm import PortfolioVM
 
 
+def page() -> None:
+    """st.navigation entry-point."""
+    portfolio_id = st.session_state.get("portfolio_id")
+    if portfolio_id is None:
+        st.info("👈 Select or create a portfolio to get started.")
+        return
+    render(portfolio_id)
+
+
 def render(portfolio_id: int) -> None:
     st.header("💰 Balance Tracking")
 
@@ -52,7 +61,7 @@ def render(portfolio_id: int) -> None:
                 display_latest[["platform", "status", "balance", "month"]].rename(
                     columns={"platform": "Platform", "status": "Status", "balance": "Balance", "month": "Date"}
                 ),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
 
@@ -112,7 +121,7 @@ def render(portfolio_id: int) -> None:
             display_df[["month", "platform", "balance_fmt"]].rename(
                 columns={"month": "Date", "platform": "Platform", "balance_fmt": "Balance"}
             ),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 

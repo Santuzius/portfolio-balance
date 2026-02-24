@@ -10,6 +10,15 @@ from app.viewmodels.mcda_vm import CriteriaVM, ScoringVM
 from app.views.components.common import status_badge
 
 
+def page() -> None:
+    """st.navigation entry-point."""
+    portfolio_id = st.session_state.get("portfolio_id")
+    if portfolio_id is None:
+        st.info("👈 Select or create a portfolio to get started.")
+        return
+    render(portfolio_id)
+
+
 def render(portfolio_id: int) -> None:
     st.header("🏆 Scoring Matrix")
     st.caption(
@@ -163,6 +172,6 @@ def _render_results(portfolio_id: int) -> None:
         display[["platform", "Status", "Weighted Score", "Allocation %"]].rename(
             columns={"platform": "Platform"}
         ),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )

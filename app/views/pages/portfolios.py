@@ -11,6 +11,11 @@ from app.views.components.common import (
 )
 
 
+def page() -> None:
+    """st.navigation entry-point."""
+    render(st.session_state.get("portfolio_id"))
+
+
 def render(portfolio_id: int | None) -> None:
     st.header("🗂️ Portfolios & Platforms")
 

@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from datetime import date
 import pandas as pd
-from app.models.database import get_connection
+from app.models.repositories import (
+    BalanceRepo, PocketRepo, LoanOriginatorRepo,
+    InterestRateRepo, CountryStatusRepo, CountryAllocationRepo,
+    AutoScoreRepo,
+)
 from app.viewmodels.mcda_vm import ScoringVM
 
 
@@ -13,54 +17,21 @@ class BalanceVM:
 
     @staticmethod
     def record_balance(platform_id: int, month: date, balance: float) -> None:
-        con = get_connection()
-        con.execute(
-            """INSERT INTO balance_snapshots (platform_id, month, balance)
-               VALUES (?, ?, ?)
-               ON CONFLICT (platform_id, month)
-               DO UPDATE SET balance = excluded.balance""",
-            [int(platform_id), month, float(balance)],
-        )
+        BalanceRepo.record(platform_id, month, balance)
 
     @staticmethod
     def delete_balance(snapshot_id: int) -> None:
-        con = get_connection()
-        con.execute("DELETE FROM balance_snapshots WHERE id = ?", [int(snapshot_id)])
+        BalanceRepo.delete(snapshot_id)
 
     @staticmethod
     def get_balances_for_portfolio(portfolio_id: int) -> pd.DataFrame:
         """All balance snapshots for a portfolio, joined with platform info."""
-        con = get_connection()
-        return con.execute(
-            """SELECT bs.id, p.name AS platform, bs.month, bs.balance, p.id AS platform_id
-               FROM balance_snapshots bs
-               JOIN platforms p ON bs.platform_id = p.id
-               WHERE p.portfolio_id = ?
-               ORDER BY bs.month DESC, p.name""",
-            [portfolio_id],
-        ).fetchdf()
+        return BalanceRepo.get_all_for_portfolio(portfolio_id)
 
     @staticmethod
     def get_latest_balances(portfolio_id: int) -> pd.DataFrame:
         """Get latest balance per platform."""
-        con = get_connection()
-        return con.execute(
-            """SELECT p.id AS platform_id, p.name AS platform, p.status,
-                      bs.balance, bs.month
-               FROM platforms p
-               LEFT JOIN (
-                   SELECT platform_id, balance, month
-                   FROM balance_snapshots
-                   WHERE (platform_id, month) IN (
-                       SELECT platform_id, MAX(month)
-                       FROM balance_snapshots
-                       GROUP BY platform_id
-                   )
-               ) bs ON p.id = bs.platform_id
-               WHERE p.portfolio_id = ?
-               ORDER BY p.name""",
-            [portfolio_id],
-        ).fetchdf()
+        return BalanceRepo.get_latest(portfolio_id)
 
     @staticmethod
     def compute_deviation(
@@ -74,8 +45,7 @@ class BalanceVM:
         rebalance_statuses
             Platform statuses that participate in rebalancing.  Platforms
             whose status is **not** in this set have their *entire* balance
-            added to off-budget (i.e. excluded from the effective total and
-            target calculation).  ``None`` means only ``{"Running"}``.
+            added to off-budget.  ``None`` means only ``{"Running"}``.
 
         Returns DataFrame with:
             platform, status, latest_balance, pct_allocation,
@@ -84,7 +54,7 @@ class BalanceVM:
         if rebalance_statuses is None:
             rebalance_statuses = {"Running"}
 
-        latest = BalanceVM.get_latest_balances(portfolio_id)
+        latest = BalanceRepo.get_latest(portfolio_id)
         allocation = ScoringVM.compute_allocation(portfolio_id)
 
         if latest.empty or allocation.empty:
@@ -92,25 +62,13 @@ class BalanceVM:
                 columns=[
                     "platform", "status", "latest_balance", "pct_allocation",
                     "target_value", "deviation", "off_budget_total",
-                ]
+                ],
             )
 
-        con = get_connection()
-
-        # Total portfolio balance (excluding off-budget)
         total_balance = latest["balance"].fillna(0).sum()
 
-        # Get off-budget totals per platform (from pockets table)
-        off_budget = con.execute(
-            """SELECT p.id AS platform_id, COALESCE(SUM(ob.amount), 0) AS off_budget_total
-               FROM platforms p
-               LEFT JOIN off_budget_pockets ob ON p.id = ob.platform_id
-               WHERE p.portfolio_id = ?
-               GROUP BY p.id""",
-            [portfolio_id],
-        ).fetchdf()
+        off_budget = BalanceRepo.get_off_budget_totals(portfolio_id)
 
-        # Merge
         merged = latest.merge(
             allocation[["platform_id", "pct_allocation", "status"]],
             on="platform_id",
@@ -120,23 +78,25 @@ class BalanceVM:
         merged = merged.merge(off_budget, on="platform_id", how="left")
         merged["off_budget_total"] = merged["off_budget_total"].fillna(0)
 
-        # Platforms whose status is NOT selected for rebalancing:
-        # their full balance is treated as off-budget.
+        # Platforms not selected for rebalancing: full balance is off-budget
         not_rebal = ~merged["status"].isin(rebalance_statuses)
         merged.loc[not_rebal, "off_budget_total"] = merged.loc[
             not_rebal, "balance"
         ].fillna(0)
 
-        # Effective balance = balance - off_budget
         effective_total = total_balance - merged["off_budget_total"].sum()
 
         merged["target_value"] = merged["pct_allocation"].fillna(0) * effective_total
         merged["latest_balance"] = merged["balance"].fillna(0)
-        merged["deviation"] = merged["target_value"] - (merged["latest_balance"] - merged["off_budget_total"])
+        merged["deviation"] = merged["target_value"] - (
+            merged["latest_balance"] - merged["off_budget_total"]
+        )
 
         return merged[
-            ["platform", "status", "latest_balance", "pct_allocation",
-             "target_value", "deviation", "off_budget_total"]
+            [
+                "platform", "status", "latest_balance", "pct_allocation",
+                "target_value", "deviation", "off_budget_total",
+            ]
         ]
 
 
@@ -145,33 +105,23 @@ class PocketVM:
 
     @staticmethod
     def list_pockets(platform_id: int) -> pd.DataFrame:
-        con = get_connection()
-        return con.execute(
-            "SELECT id, name, amount, note FROM off_budget_pockets WHERE platform_id = ? ORDER BY name",
-            [int(platform_id)],
-        ).fetchdf()
+        return PocketRepo.list_for_platform(platform_id)
 
     @staticmethod
-    def create_pocket(platform_id: int, name: str, amount: float, note: str = "") -> int:
-        con = get_connection()
-        con.execute(
-            "INSERT INTO off_budget_pockets (platform_id, name, amount, note) VALUES (?, ?, ?, ?)",
-            [int(platform_id), name, float(amount), note],
-        )
-        return con.execute("SELECT currval('seq_pocket')").fetchone()[0]
+    def create_pocket(
+        platform_id: int, name: str, amount: float, note: str = "",
+    ) -> int:
+        return PocketRepo.create(platform_id, name, amount, note)
 
     @staticmethod
-    def update_pocket(pocket_id: int, name: str, amount: float, note: str = "") -> None:
-        con = get_connection()
-        con.execute(
-            "UPDATE off_budget_pockets SET name = ?, amount = ?, note = ? WHERE id = ?",
-            [name, float(amount), note, int(pocket_id)],
-        )
+    def update_pocket(
+        pocket_id: int, name: str, amount: float, note: str = "",
+    ) -> None:
+        PocketRepo.update(pocket_id, name, amount, note)
 
     @staticmethod
     def delete_pocket(pocket_id: int) -> None:
-        con = get_connection()
-        con.execute("DELETE FROM off_budget_pockets WHERE id = ?", [int(pocket_id)])
+        PocketRepo.delete(pocket_id)
 
 
 class LoanOriginatorVM:
@@ -179,30 +129,18 @@ class LoanOriginatorVM:
 
     @staticmethod
     def list_originators(platform_id: int) -> pd.DataFrame:
-        con = get_connection()
-        return con.execute(
-            """SELECT id, country, originator_name, num_loans, note
-               FROM loan_originators WHERE platform_id = ? ORDER BY country""",
-            [int(platform_id)],
-        ).fetchdf()
+        return LoanOriginatorRepo.list_for_platform(platform_id)
 
     @staticmethod
     def save_originator(
-        platform_id: int, country: str, originator_name: str, num_loans: float, note: str = ""
+        platform_id: int, country: str, originator_name: str,
+        num_loans: float, note: str = "",
     ) -> None:
-        con = get_connection()
-        con.execute(
-            """INSERT INTO loan_originators (platform_id, country, originator_name, num_loans, note)
-               VALUES (?, ?, ?, ?, ?)
-               ON CONFLICT (platform_id, country, originator_name)
-               DO UPDATE SET num_loans = excluded.num_loans, note = excluded.note""",
-            [int(platform_id), country, originator_name, float(num_loans), note],
-        )
+        LoanOriginatorRepo.save(platform_id, country, originator_name, num_loans, note)
 
     @staticmethod
     def delete_originator(originator_id: int) -> None:
-        con = get_connection()
-        con.execute("DELETE FROM loan_originators WHERE id = ?", [int(originator_id)])
+        LoanOriginatorRepo.delete(originator_id)
 
 
 class InterestRateVM:
@@ -210,27 +148,11 @@ class InterestRateVM:
 
     @staticmethod
     def get_rates(portfolio_id: int) -> pd.DataFrame:
-        con = get_connection()
-        return con.execute(
-            """SELECT p.id AS platform_id, p.name AS platform,
-                      COALESCE(ir.estimated_rate, 0) AS estimated_rate
-               FROM platforms p
-               LEFT JOIN interest_rates ir ON p.id = ir.platform_id
-               WHERE p.portfolio_id = ?
-               ORDER BY p.name""",
-            [portfolio_id],
-        ).fetchdf()
+        return InterestRateRepo.get_rates(portfolio_id)
 
     @staticmethod
     def save_rate(platform_id: int, estimated_rate: float) -> None:
-        con = get_connection()
-        con.execute(
-            """INSERT INTO interest_rates (platform_id, estimated_rate)
-               VALUES (?, ?)
-               ON CONFLICT (platform_id)
-               DO UPDATE SET estimated_rate = excluded.estimated_rate""",
-            [int(platform_id), float(estimated_rate)],
-        )
+        InterestRateRepo.save_rate(platform_id, estimated_rate)
 
 
 class CountryStatusVM:
@@ -238,53 +160,23 @@ class CountryStatusVM:
 
     @staticmethod
     def list_statuses(platform_id: int | None = None) -> pd.DataFrame:
-        con = get_connection()
-        if platform_id is not None:
-            return con.execute(
-                """SELECT cs.id, p.name AS platform, cs.country, cs.status, cs.note
-                   FROM country_statuses cs
-                   LEFT JOIN platforms p ON cs.platform_id = p.id
-                   WHERE cs.platform_id = ?
-                   ORDER BY cs.country""",
-                [int(platform_id)],
-            ).fetchdf()
-        return con.execute(
-            """SELECT cs.id, p.name AS platform, cs.country, cs.status, cs.note
-               FROM country_statuses cs
-               LEFT JOIN platforms p ON cs.platform_id = p.id
-               ORDER BY cs.country, p.name"""
-        ).fetchdf()
+        return CountryStatusRepo.list_statuses(platform_id)
 
     @staticmethod
-    def save_status(platform_id: int | None, country: str, status: str, note: str = "") -> None:
-        con = get_connection()
-        con.execute(
-            """INSERT INTO country_statuses (platform_id, country, status, note)
-               VALUES (?, ?, ?, ?)
-               ON CONFLICT (platform_id, country)
-               DO UPDATE SET status = excluded.status, note = excluded.note""",
-            [int(platform_id) if platform_id is not None else None, country, status, note],
-        )
+    def save_status(
+        platform_id: int | None, country: str, status: str, note: str = "",
+    ) -> None:
+        CountryStatusRepo.save(platform_id, country, status, note)
 
     @staticmethod
-    def update_status(status_id: int, new_status: str, note: str | None = None) -> None:
-        """Update just the status (and optionally note) of an existing entry."""
-        con = get_connection()
-        if note is not None:
-            con.execute(
-                "UPDATE country_statuses SET status = ?, note = ? WHERE id = ?",
-                [new_status, note, int(status_id)],
-            )
-        else:
-            con.execute(
-                "UPDATE country_statuses SET status = ? WHERE id = ?",
-                [new_status, int(status_id)],
-            )
+    def update_status(
+        status_id: int, new_status: str, note: str | None = None,
+    ) -> None:
+        CountryStatusRepo.update(status_id, new_status, note)
 
     @staticmethod
     def delete_status(status_id: int) -> None:
-        con = get_connection()
-        con.execute("DELETE FROM country_statuses WHERE id = ?", [int(status_id)])
+        CountryStatusRepo.delete(status_id)
 
 
 class CountryAllocationVM:
@@ -299,69 +191,37 @@ class CountryAllocationVM:
     @staticmethod
     def get_mode(platform_id: int) -> str:
         """Return 'manual' or 'equal'."""
-        con = get_connection()
-        row = con.execute(
-            "SELECT allocation_mode FROM country_allocations WHERE platform_id = ?",
-            [int(platform_id)],
-        ).fetchone()
-        mode = row[0] if row else "equal"
+        mode = CountryAllocationRepo.get_mode_raw(platform_id)
+        if mode is None:
+            return "equal"
         # Migrate legacy 'status' rows transparently
         return "equal" if mode == "status" else mode
 
     @staticmethod
     def set_mode(platform_id: int, mode: str) -> None:
-        con = get_connection()
-        con.execute(
-            """INSERT INTO country_allocations (platform_id, allocation_mode)
-               VALUES (?, ?)
-               ON CONFLICT (platform_id)
-               DO UPDATE SET allocation_mode = excluded.allocation_mode""",
-            [int(platform_id), mode],
-        )
+        CountryAllocationRepo.set_mode(platform_id, mode)
 
     @staticmethod
     def get_excluded_statuses(platform_id: int) -> list[str]:
         """Return list of excluded country statuses."""
-        con = get_connection()
-        row = con.execute(
-            "SELECT excluded_statuses FROM country_allocations WHERE platform_id = ?",
-            [int(platform_id)],
-        ).fetchone()
-        if row and row[0]:
-            return [s.strip() for s in row[0].split(",") if s.strip()]
+        raw = CountryAllocationRepo.get_excluded_statuses_raw(platform_id)
+        if raw:
+            return [s.strip() for s in raw.split(",") if s.strip()]
         return []
 
     @staticmethod
     def set_excluded_statuses(platform_id: int, excluded: list[str]) -> None:
-        con = get_connection()
-        val = ",".join(excluded)
-        con.execute(
-            """INSERT INTO country_allocations (platform_id, excluded_statuses)
-               VALUES (?, ?)
-               ON CONFLICT (platform_id)
-               DO UPDATE SET excluded_statuses = excluded.excluded_statuses""",
-            [int(platform_id), val],
-        )
+        CountryAllocationRepo.set_excluded_statuses(platform_id, ",".join(excluded))
 
     @staticmethod
     def get_pcts(platform_id: int) -> pd.DataFrame:
-        """Return manual allocation pcts and values for a platform."""
-        con = get_connection()
-        return con.execute(
-            "SELECT country, pct, value FROM country_allocation_pcts WHERE platform_id = ? ORDER BY country",
-            [int(platform_id)],
-        ).fetchdf()
+        return CountryAllocationRepo.get_pcts(platform_id)
 
     @staticmethod
-    def save_pct(platform_id: int, country: str, pct: float, value: float = 0.0) -> None:
-        con = get_connection()
-        con.execute(
-            """INSERT INTO country_allocation_pcts (platform_id, country, pct, value)
-               VALUES (?, ?, ?, ?)
-               ON CONFLICT (platform_id, country)
-               DO UPDATE SET pct = excluded.pct, value = excluded.value""",
-            [int(platform_id), country, float(pct), float(value)],
-        )
+    def save_pct(
+        platform_id: int, country: str, pct: float, value: float = 0.0,
+    ) -> None:
+        CountryAllocationRepo.save_pct(platform_id, country, pct, value)
 
     @staticmethod
     def included_countries(platform_id: int) -> pd.DataFrame:
@@ -369,9 +229,7 @@ class CountryAllocationVM:
 
         Running is always included regardless of the exclusion list.
         """
-        from app.viewmodels.balance_vm import CountryStatusVM
-
-        countries = CountryStatusVM.list_statuses(platform_id)
+        countries = CountryStatusRepo.list_statuses(platform_id)
         if countries.empty:
             return countries
         excluded = set(CountryAllocationVM.get_excluded_statuses(platform_id))
@@ -387,9 +245,7 @@ class CountryAllocationVM:
 
         Returns DataFrame with columns: country, pct
         """
-        from app.viewmodels.balance_vm import CountryStatusVM
-
-        all_countries = CountryStatusVM.list_statuses(platform_id)
+        all_countries = CountryStatusRepo.list_statuses(platform_id)
         if all_countries.empty:
             return pd.DataFrame(columns=["country", "pct"])
 
@@ -398,12 +254,15 @@ class CountryAllocationVM:
         included = all_countries[~all_countries["status"].isin(excluded)]
         mode = CountryAllocationVM.get_mode(platform_id)
 
-        # Build result – excluded countries always get 0%
         result = []
 
         if mode == "manual" and not included.empty:
-            manual = CountryAllocationVM.get_pcts(platform_id)
-            pct_map = dict(zip(manual["country"], manual["pct"])) if not manual.empty else {}
+            manual = CountryAllocationRepo.get_pcts(platform_id)
+            pct_map = (
+                dict(zip(manual["country"], manual["pct"]))
+                if not manual.empty
+                else {}
+            )
             included_set = set(included["country"].tolist())
             for _, row in all_countries.iterrows():
                 c = row["country"]
@@ -412,7 +271,6 @@ class CountryAllocationVM:
                     "pct": float(pct_map.get(c, 0)) if c in included_set else 0.0,
                 })
         else:
-            # Equal allocation among included countries
             included_set = set(included["country"].tolist())
             n = len(included)
             eq_pct = 100.0 / n if n > 0 else 0.0
@@ -436,42 +294,38 @@ class AutoScoreVM:
     @staticmethod
     def get_equation(portfolio_id: int, special_type: str) -> tuple[str, bool]:
         """Return (equation_str, enabled)."""
-        con = get_connection()
-        row = con.execute(
-            "SELECT equation, enabled FROM auto_score_equations WHERE portfolio_id = ? AND special_type = ?",
-            [int(portfolio_id), special_type],
-        ).fetchone()
+        row = AutoScoreRepo.get_equation(portfolio_id, special_type)
         if row:
             eq = row[0] if row[0] else AutoScoreVM.DEFAULT_EQUATIONS.get(special_type, "")
             return eq, bool(row[1])
         return AutoScoreVM.DEFAULT_EQUATIONS.get(special_type, ""), False
 
     @staticmethod
-    def save_equation(portfolio_id: int, special_type: str, equation: str, enabled: bool) -> None:
-        con = get_connection()
-        con.execute(
-            """INSERT INTO auto_score_equations (portfolio_id, special_type, equation, enabled)
-               VALUES (?, ?, ?, ?)
-               ON CONFLICT (portfolio_id, special_type)
-               DO UPDATE SET equation = excluded.equation, enabled = excluded.enabled""",
-            [int(portfolio_id), special_type, equation, enabled],
-        )
+    def save_equation(
+        portfolio_id: int, special_type: str, equation: str, enabled: bool,
+    ) -> None:
+        AutoScoreRepo.save_equation(portfolio_id, special_type, equation, enabled)
 
     @staticmethod
-    def compute_interest_rate_scores(portfolio_id: int, equation: str) -> dict[int, float]:
+    def compute_interest_rate_scores(
+        portfolio_id: int, equation: str,
+    ) -> dict[int, float]:
         """Compute interest rate scores for all Running platforms.
 
         Returns {platform_id: score}.
         Available variables in equation: rate, min_rate, max_rate, avg_rate.
         """
-        from app.viewmodels.balance_vm import InterestRateVM
         from app.viewmodels.portfolio_vm import PortfolioVM
 
         platforms = PortfolioVM.list_platforms(portfolio_id, include_inactive=False)
-        rates_df = InterestRateVM.get_rates(portfolio_id)
-        # Only Running platforms
-        running_ids = set(int(x) for x in platforms[platforms["status"] == "Running"]["id"].tolist())
-        rates_df = rates_df[rates_df["platform_id"].apply(lambda x: int(x) in running_ids)]
+        rates_df = InterestRateRepo.get_rates(portfolio_id)
+        running_ids = set(
+            int(x)
+            for x in platforms[platforms["status"] == "Running"]["id"].tolist()
+        )
+        rates_df = rates_df[
+            rates_df["platform_id"].apply(lambda x: int(x) in running_ids)
+        ]
         active_rates = rates_df[rates_df["estimated_rate"] > 0]["estimated_rate"]
 
         if active_rates.empty:
@@ -496,15 +350,14 @@ class AutoScoreVM:
         return results
 
     @staticmethod
-    def compute_country_scores(portfolio_id: int, equation: str) -> dict[int, float]:
+    def compute_country_scores(
+        portfolio_id: int, equation: str,
+    ) -> dict[int, float]:
         """Compute country count scores for all Running platforms.
-
-        Only countries whose status is *not* excluded are counted.
 
         Returns {platform_id: score}.
         Available variables in equation: count (number of included countries).
         """
-        from app.viewmodels.balance_vm import CountryAllocationVM
         from app.viewmodels.portfolio_vm import PortfolioVM
 
         platforms = PortfolioVM.list_platforms(portfolio_id, include_inactive=False)

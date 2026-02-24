@@ -28,69 +28,47 @@ from app.views.pages import dashboard, portfolios, criteria, scoring, balances, 
 
 st.set_page_config(
     page_title="Portfolio Balance",
-    page_icon="📊",
+    page_icon="⚖️",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# ── Sidebar Navigation ─────────────────────────────────────────────
+# ── Sidebar Header ──────────────────────────────────────────────────
 st.sidebar.title("Portfolio Balance")
 st.sidebar.markdown("*Multi-Criteria Decision Analysis*")
 st.sidebar.divider()
 
-# Portfolio selector
+# Portfolio selector (also stores in st.session_state["portfolio_id"])
 portfolio_id = portfolio_selector()
 
 st.sidebar.divider()
 
-# Build dynamic page list — Interest Rates / Countries only appear
-# when the corresponding special criterion type is selected.
-PAGES: dict[str, str] = {}
-PAGES["⚖️ Rebalancing"] = "dashboard"
-PAGES["💰 Balance Tracking"] = "balances"
-PAGES["🗂️ Portfolios & Platforms"] = "portfolios"
-PAGES["💎 Criteria"] = "criteria"
-PAGES["📐 Weighting Matrix"] = "weighting"
-PAGES["🏆 Scoring Matrix"] = "scoring"
+# ── Build page list ─────────────────────────────────────────────────
+pages: list[st.Page] = [
+    st.Page(dashboard.page, title="Rebalancing", icon="⚖️", url_path="rebalancing"),
+    st.Page(portfolios.page, title="Portfolios & Platforms", icon="🗂️", url_path="portfolios"),
+    st.Page(criteria.page, title="Criteria", icon="💎", url_path="criteria"),
+    st.Page(criteria.page_weighting, title="Weighting Matrix", icon="📐", url_path="weighting"),
+    st.Page(scoring.page, title="Scoring Matrix", icon="🏆", url_path="scoring"),
+    st.Page(balances.page, title="Balance Tracking", icon="💰", url_path="balances"),
+]
 
-# Detect special criteria to conditionally show pages
-_has_interest = False
-_has_country = False
+# Conditionally show special-criteria pages
 if portfolio_id is not None:
     _crit_df = CriteriaVM.list_criteria(portfolio_id)
     if not _crit_df.empty:
         _special = _crit_df[_crit_df["is_special"] == True]  # noqa: E712
-        _has_interest = not _special[_special["special_type"] == "interest_rate"].empty
-        _has_country = not _special[_special["special_type"] == "country"].empty
+        if not _special[_special["special_type"] == "interest_rate"].empty:
+            pages.append(
+                st.Page(special_criteria.page_interest_rates, title="Interest Rates", icon="📈", url_path="interest-rates"),
+            )
+        if not _special[_special["special_type"] == "country"].empty:
+            pages.append(
+                st.Page(special_criteria.page_countries, title="Countries", icon="🌍", url_path="countries"),
+            )
 
-if _has_interest:
-    PAGES["⭐📈 Interest Rates"] = "interest_rates"
-if _has_country:
-    PAGES["⭐🌍 Countries"] = "country_status"
-
-page = st.sidebar.radio("Navigation", list(PAGES.keys()), label_visibility="collapsed")
-selected_page = PAGES[page]
+nav = st.navigation(pages)
+nav.run()
 
 st.sidebar.divider()
 st.sidebar.caption("Built with Streamlit + DuckDB")
-
-# ── Page Router ─────────────────────────────────────────────────────
-
-if selected_page == "portfolios":
-    portfolios.render(portfolio_id)
-elif portfolio_id is None:
-    st.info("👈 Select or create a portfolio in the sidebar to get started.")
-elif selected_page == "dashboard":
-    dashboard.render(portfolio_id)
-elif selected_page == "criteria":
-    criteria.render(portfolio_id)
-elif selected_page == "weighting":
-    criteria.render_weighting(portfolio_id)
-elif selected_page == "scoring":
-    scoring.render(portfolio_id)
-elif selected_page == "balances":
-    balances.render(portfolio_id)
-elif selected_page == "interest_rates":
-    special_criteria.render_interest_rates(portfolio_id)
-elif selected_page == "country_status":
-    special_criteria.render_country_status(portfolio_id)

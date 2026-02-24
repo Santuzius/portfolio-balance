@@ -7,20 +7,18 @@ All tables are created idempotently (CREATE TABLE IF NOT EXISTS).
 from __future__ import annotations
 
 import duckdb
+import streamlit as st
 from pathlib import Path
 
 DB_PATH = Path(__file__).resolve().parent.parent / "portfolio_balance.duckdb"
 
-_CONNECTION: duckdb.DuckDBPyConnection | None = None
 
-
+@st.cache_resource
 def get_connection() -> duckdb.DuckDBPyConnection:
-    """Return a module-level persistent connection (singleton)."""
-    global _CONNECTION
-    if _CONNECTION is None:
-        _CONNECTION = duckdb.connect(str(DB_PATH))
-        _bootstrap(_CONNECTION)
-    return _CONNECTION
+    """Return a cached persistent DuckDB connection (singleton)."""
+    con = duckdb.connect(str(DB_PATH))
+    _bootstrap(con)
+    return con
 
 
 def _bootstrap(con: duckdb.DuckDBPyConnection) -> None:

@@ -43,25 +43,59 @@ COUNTRY_STATUS_COLORS: dict[str, str] = {
     "Filtered Out":       "#a5a5a5",
 }
 
-# Mapping from ISO 3166-1 country names to flag emojis
-COUNTRY_FLAGS: dict[str, str] = {
-    "Albania": "🇦🇱", "Armenia": "🇦🇲", "Botswana": "🇧🇼", "Brazil": "🇧🇷",
-    "Bulgaria": "🇧🇬", "Colombia": "🇨🇴", "Czech Republic": "🇨🇿", "Denmark": "🇩🇰",
-    "Estonia": "🇪🇪", "Finland": "🇫🇮", "Georgia": "🇬🇪", "Germany": "🇩🇪",
-    "Great Britain": "🇬🇧", "Iceland": "🇮🇸", "India": "🇮🇳", "Indonesia": "🇮🇩",
-    "Jordan": "🇯🇴", "Kazakhstan": "🇰🇿", "Kenya": "🇰🇪", "Kosovo": "🇽🇰",
-    "Latvia": "🇱🇻", "Lithuania": "🇱🇹", "Mexico": "🇲🇽", "Moldova": "🇲🇩",
-    "Netherlands": "🇳🇱", "Nigeria": "🇳🇬", "North Macedonia": "🇲🇰",
-    "Peru": "🇵🇪", "Philippines": "🇵🇭", "Poland": "🇵🇱", "Romania": "🇷🇴",
-    "Russia": "🇷🇺", "Singapore": "🇸🇬", "South Africa": "🇿🇦", "Spain": "🇪🇸",
-    "Sri Lanka": "🇱🇰", "Sweden": "🇸🇪", "Uganda": "🇺🇬", "Ukraine": "🇺🇦",
-    "Uzbekistan": "🇺🇿", "Vietnam": "🇻🇳", "Belarus": "🇧🇾", "Cyprus": "🇨🇾",
+# Aliases for country names that pycountry doesn't resolve by default.
+_COUNTRY_NAME_OVERRIDES: dict[str, str] = {
+    "Great Britain": "GB",
+    "Kosovo": "XK",
+    "Russia": "RU",
 }
 
 
+def _get_flag(code: str) -> str:
+    """Convert an ISO 3166-1 alpha-2 code to a flag emoji."""
+    code = code.upper()
+    offset = 127397
+    return chr(ord(code[0]) + offset) + chr(ord(code[1]) + offset)
+
+
+def _country_to_code(name: str) -> str | None:
+    """Resolve a country *name* to its ISO alpha-2 code.
+
+    Uses pycountry for robust lookup (official name, common name,
+    fuzzy search) with a small override table for edge-cases.
+    """
+    import pycountry
+
+    if name in _COUNTRY_NAME_OVERRIDES:
+        return _COUNTRY_NAME_OVERRIDES[name]
+
+    # Exact lookup first
+    hit = pycountry.countries.get(name=name)
+    if hit:
+        return hit.alpha_2
+
+    # Try common_name / official_name attributes
+    for c in pycountry.countries:
+        if getattr(c, "common_name", None) == name:
+            return c.alpha_2
+        if getattr(c, "official_name", None) == name:
+            return c.alpha_2
+
+    # Fuzzy search as last resort
+    try:
+        results = pycountry.countries.search_fuzzy(name)
+        if results:
+            return results[0].alpha_2
+    except LookupError:
+        pass
+
+    return None
+
+
 def country_flag(country: str) -> str:
-    """Return flag emoji + country name."""
-    flag = COUNTRY_FLAGS.get(country, "🏳️")
+    """Return flag emoji + country name.  Works for *any* country."""
+    code = _country_to_code(country)
+    flag = _get_flag(code) if code else "🏳️"
     return f"{flag} {country}"
 
 
@@ -86,17 +120,20 @@ def status_badge(status: str) -> str:
 
 
 def portfolio_selector(key: str = "portfolio_select") -> int | None:
-    """Render a portfolio selector in the sidebar and return selected id."""
+    """Render a portfolio selector in the sidebar, store in session_state, and return selected id."""
     from app.viewmodels.portfolio_vm import PortfolioVM
 
     portfolios = PortfolioVM.list_portfolios()
     if portfolios.empty:
         st.sidebar.warning("No portfolios yet. Create one first.")
+        st.session_state["portfolio_id"] = None
         return None
 
     options = {f"{row['name']} ({STATUS_COLORS.get(row['status'], '')})": row["id"] for _, row in portfolios.iterrows()}
     selected_label = st.sidebar.selectbox("Portfolio", list(options.keys()), key=key)
-    return options[selected_label] if selected_label else None
+    selected_id = options[selected_label] if selected_label else None
+    st.session_state["portfolio_id"] = selected_id
+    return selected_id
 
 
 def platform_selector(portfolio_id: int, key: str = "platform_select", include_all: bool = False) -> int | None:

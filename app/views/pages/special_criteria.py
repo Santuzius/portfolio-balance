@@ -19,6 +19,28 @@ from app.views.components.common import (
 
 
 # ---------------------------------------------------------------------------
+# Page wrappers for st.navigation
+# ---------------------------------------------------------------------------
+
+def page_interest_rates() -> None:
+    """st.navigation entry-point."""
+    portfolio_id = st.session_state.get("portfolio_id")
+    if portfolio_id is None:
+        st.info("👈 Select or create a portfolio to get started.")
+        return
+    render_interest_rates(portfolio_id)
+
+
+def page_countries() -> None:
+    """st.navigation entry-point."""
+    portfolio_id = st.session_state.get("portfolio_id")
+    if portfolio_id is None:
+        st.info("👈 Select or create a portfolio to get started.")
+        return
+    render_country_status(portfolio_id)
+
+
+# ---------------------------------------------------------------------------
 # Interest Rates
 # ---------------------------------------------------------------------------
 
@@ -78,7 +100,7 @@ def render_interest_rates(portfolio_id: int) -> None:
             text="est_pct",
         )
         fig.update_traces(texttemplate="%{text:.2f}%", textposition="auto")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
         # Summary stats
         col1, col2, col3 = st.columns(3)
@@ -104,7 +126,7 @@ def _status_color_html(status: str) -> str:
 def render_country_status(portfolio_id: int) -> None:
     st.header("🌍 Countries Overview")
 
-    platforms = PortfolioVM.list_platforms(portfolio_id, include_inactive=False)
+    platforms = PortfolioVM.list_platforms(portfolio_id, include_inactive=True)
     if platforms.empty:
         st.warning("Add platforms first.")
         return
@@ -380,7 +402,7 @@ def _render_manual_mode(
             {"Country": country_flag(r["country"]), "Status": r["status"], "Allocation": "0%"}
             for _, r in excluded.iterrows()
         ]
-        st.dataframe(pd.DataFrame(exc_rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(exc_rows), width="stretch", hide_index=True)
 
 
 def _render_equal_mode(included: pd.DataFrame, excluded: pd.DataFrame) -> None:
@@ -400,7 +422,7 @@ def _render_equal_mode(included: pd.DataFrame, excluded: pd.DataFrame) -> None:
             "Status": row["status"],
             "Allocation %": "0.0% (excluded)",
         })
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
 
 def _render_distribution_stats(portfolio_id: int, platforms: pd.DataFrame) -> None:
@@ -454,12 +476,12 @@ def _render_distribution_stats(portfolio_id: int, platforms: pd.DataFrame) -> No
         hole=0.3,
     )
     fig.update_traces(textposition="inside", textinfo="percent+label")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     # Table
     st.dataframe(
         fund_df[["Country", "Amount €", "Pct"]].rename(columns={"Pct": "%"}),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -482,7 +504,7 @@ def _render_overview(portfolio_id: int) -> None:
         all_statuses[["Country", "platform", "Status", "note"]].rename(
             columns={"platform": "Platform", "note": "Note"}
         ),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -494,7 +516,7 @@ def _render_overview(portfolio_id: int) -> None:
         aggfunc="first",
     ).fillna("—")
     st.subheader("Country × Platform Matrix")
-    st.dataframe(pivot, use_container_width=True)
+    st.dataframe(pivot, width="stretch")
 
 
 # ---------------------------------------------------------------------------
@@ -548,7 +570,7 @@ def _render_auto_interest_rate(
             plat_map = dict(zip(platforms["id"].astype(int), platforms["name"]))
             for pid, score in sorted(scores.items(), key=lambda x: -x[1]):
                 preview_rows.append({"Platform": plat_map.get(pid, str(pid)), "Score": round(score, 2)})
-            st.dataframe(pd.DataFrame(preview_rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(preview_rows), width="stretch", hide_index=True)
 
 
 def _render_auto_country(
@@ -597,4 +619,4 @@ def _render_auto_country(
             plat_map = dict(zip(platforms["id"].astype(int), platforms["name"]))
             for pid, score in sorted(scores.items(), key=lambda x: -x[1]):
                 preview_rows.append({"Platform": plat_map.get(pid, str(pid)), "Score": round(score, 2)})
-            st.dataframe(pd.DataFrame(preview_rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(preview_rows), width="stretch", hide_index=True)

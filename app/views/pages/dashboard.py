@@ -12,6 +12,15 @@ from app.viewmodels.mcda_vm import ScoringVM
 from app.views.components.common import status_badge, PLATFORM_STATUSES
 
 
+def page() -> None:
+    """st.navigation entry-point."""
+    portfolio_id = st.session_state.get("portfolio_id")
+    if portfolio_id is None:
+        st.info("👈 Select or create a portfolio to get started.")
+        return
+    render(portfolio_id)
+
+
 def render(portfolio_id: int) -> None:
     st.header("⚖️ Rebalancing")
 
@@ -70,7 +79,7 @@ def render(portfolio_id: int) -> None:
                     title="Current", hole=0.3,
                 )
                 fig_cur.update_traces(textposition="inside", textinfo="percent+label")
-                st.plotly_chart(fig_cur, use_container_width=True)
+                st.plotly_chart(fig_cur, width="stretch")
             else:
                 st.info("No current balance data.")
         else:
@@ -84,7 +93,7 @@ def render(portfolio_id: int) -> None:
                 title="Target", hole=0.3,
             )
             fig_tgt.update_traces(textposition="inside", textinfo="percent+label")
-            st.plotly_chart(fig_tgt, use_container_width=True)
+            st.plotly_chart(fig_tgt, width="stretch")
         else:
             st.info("No target allocation computed yet.")
 
@@ -105,7 +114,7 @@ def render(portfolio_id: int) -> None:
             display_df[["platform", "Status", "Balance €", "Target €", "Deviation €", "Allocation %", "Off-Budget €"]].rename(
                 columns={"platform": "Platform"}
             ),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -127,7 +136,7 @@ def render(portfolio_id: int) -> None:
             yaxis_title="Deviation (€)",
             showlegend=False,
         )
-        st.plotly_chart(fig_bar, use_container_width=True)
+        st.plotly_chart(fig_bar, width="stretch")
 
     # ── Scoring Summary Table ───────────────────────────────────────────────
     st.subheader("MCDA Scores")
@@ -141,6 +150,6 @@ def render(portfolio_id: int) -> None:
             score_df[["platform", "Status", "Weighted Score", "Allocation %"]].rename(
                 columns={"platform": "Platform"}
             ),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
