@@ -10,7 +10,7 @@ import duckdb
 import streamlit as st
 from pathlib import Path
 
-DB_PATH = Path(__file__).resolve().parent.parent / "portfolio_balance.duckdb"
+DB_PATH = Path(__file__).resolve().parent.parent.parent / "pb-data" / "portfolio_balance.duckdb"
 
 
 @st.cache_resource
@@ -56,9 +56,7 @@ def _bootstrap(con: duckdb.DuckDBPyConnection) -> None:
             name            TEXT NOT NULL,
             display_order   INTEGER NOT NULL DEFAULT 0,
             is_special      BOOLEAN NOT NULL DEFAULT FALSE,
-            special_type    TEXT DEFAULT NULL
-                            CHECK (special_type IS NULL
-                                   OR special_type IN ('interest_rate','country')),
+            special_type    TEXT DEFAULT NULL,
             UNIQUE (portfolio_id, name)
         );
     """)
@@ -103,9 +101,15 @@ def _bootstrap(con: duckdb.DuckDBPyConnection) -> None:
         CREATE TABLE IF NOT EXISTS loan_originators (
             id              INTEGER DEFAULT nextval('seq_originator') PRIMARY KEY,
             platform_id     INTEGER NOT NULL REFERENCES platforms(id),
-            country         TEXT NOT NULL,
+            country         TEXT NOT NULL DEFAULT '',
             originator_name TEXT NOT NULL DEFAULT '',
             num_loans       DOUBLE NOT NULL DEFAULT 0,
+            status          TEXT NOT NULL DEFAULT 'Running'
+                            CHECK (status IN (
+                                'Separated','Running','Being Relocated','To Relocate',
+                                'High Supply','Possible','To Be Tested',
+                                'Low Supply Active','Low Supply Inactive',
+                                'Risky','Defaulted','Filtered Out')),
             note            TEXT DEFAULT '',
             UNIQUE (platform_id, country, originator_name)
         );
@@ -147,7 +151,7 @@ def _bootstrap(con: duckdb.DuckDBPyConnection) -> None:
                                 'Separated','Running','Being Relocated','To Relocate',
                                 'High Supply','Possible','To Be Tested',
                                 'Low Supply Active','Low Supply Inactive',
-                                'Risky','Filtered Out')),
+                                'Risky','Defaulted','Filtered Out')),
             note            TEXT DEFAULT '',
             UNIQUE (platform_id, country)
         );
@@ -157,8 +161,7 @@ def _bootstrap(con: duckdb.DuckDBPyConnection) -> None:
     con.execute("""
         CREATE TABLE IF NOT EXISTS country_allocations (
             platform_id     INTEGER NOT NULL REFERENCES platforms(id),
-            allocation_mode TEXT NOT NULL DEFAULT 'equal'
-                            CHECK (allocation_mode IN ('manual','equal')),
+            allocation_mode TEXT NOT NULL DEFAULT 'equal',
             excluded_statuses TEXT NOT NULL DEFAULT '',
             PRIMARY KEY (platform_id)
         );
@@ -179,10 +182,49 @@ def _bootstrap(con: duckdb.DuckDBPyConnection) -> None:
     con.execute("""
         CREATE TABLE IF NOT EXISTS auto_score_equations (
             portfolio_id    INTEGER NOT NULL REFERENCES portfolios(id),
-            special_type    TEXT NOT NULL
-                            CHECK (special_type IN ('interest_rate','country')),
+            special_type    TEXT NOT NULL,
             equation        TEXT NOT NULL DEFAULT '',
             enabled         BOOLEAN NOT NULL DEFAULT FALSE,
             PRIMARY KEY (portfolio_id, special_type)
         );
     """)
+
+    # ----- Originator allocation per platform -----
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS originator_allocations (
+            platform_id     INTEGER NOT NULL REFERENCES platforms(id),
+            allocation_mode TEXT NOT NULL DEFAULT 'equal',
+            excluded_statuses TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (platform_id)
+        );
+    """)
+
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS originator_allocation_pcts (
+            platform_id     INTEGER NOT NULL REFERENCES platforms(id),
+            originator_key  TEXT NOT NULL,
+            pct             DOUBLE NOT NULL DEFAULT 0,
+            value           DOUBLE NOT NULL DEFAULT 0,
+            PRIMARY KEY (platform_id, originator_key)
+        );
+    """)
+
+    # ----- Schema migrations for existing databases -----
+    _migrate(con)
+
+
+def _migrate(con: duckdb.DuckDBPyConnection) -> None:
+    """Idempotent schema migrations for existing databases."""
+
+    # loan_originators: add 'status' column if missing (pre-v2 databases)
+    cols = {
+        r[0]
+        for r in con.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'loan_originators'"
+        ).fetchall()
+    }
+    if cols and "status" not in cols:
+        con.execute(
+            "ALTER TABLE loan_originators ADD COLUMN status TEXT NOT NULL DEFAULT 'Running'"
+        )

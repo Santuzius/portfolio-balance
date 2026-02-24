@@ -1,4 +1,4 @@
-"""Special criterion pages: Interest Rates comparison and Country Status overview."""
+"""Countries overview page: status management, allocation, distribution."""
 
 from __future__ import annotations
 
@@ -8,8 +8,7 @@ import plotly.express as px
 
 from app.viewmodels.portfolio_vm import PortfolioVM
 from app.viewmodels.balance_vm import (
-    InterestRateVM, CountryStatusVM, CountryAllocationVM, BalanceVM,
-    AutoScoreVM,
+    CountryStatusVM, CountryAllocationVM, BalanceVM, AutoScoreVM,
 )
 from app.viewmodels.mcda_vm import CriteriaVM, ScoringVM
 from app.views.components.common import (
@@ -19,19 +18,10 @@ from app.views.components.common import (
 
 
 # ---------------------------------------------------------------------------
-# Page wrappers for st.navigation
+# Page wrapper for st.navigation
 # ---------------------------------------------------------------------------
 
-def page_interest_rates() -> None:
-    """st.navigation entry-point."""
-    portfolio_id = st.session_state.get("portfolio_id")
-    if portfolio_id is None:
-        st.info("👈 Select or create a portfolio to get started.")
-        return
-    render_interest_rates(portfolio_id)
-
-
-def page_countries() -> None:
+def page() -> None:
     """st.navigation entry-point."""
     portfolio_id = st.session_state.get("portfolio_id")
     if portfolio_id is None:
@@ -41,86 +31,16 @@ def page_countries() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Interest Rates
-# ---------------------------------------------------------------------------
-
-def render_interest_rates(portfolio_id: int) -> None:
-    st.header("📈 Interest Rate Comparison")
-
-    # Defaulted, Closed, Dissaving are always inactive
-    INACTIVE_STATUSES = {"Defaulted", "Closed", "Dissaving"}
-    show_inactive = st.checkbox("Show inactive platforms", value=False, key="ir_show_inactive")
-    all_plats = PortfolioVM.list_platforms(portfolio_id, include_inactive=True)
-    if show_inactive:
-        platforms = all_plats
-    else:
-        platforms = all_plats[~all_plats["status"].isin(INACTIVE_STATUSES)]
-    if platforms.empty:
-        st.warning("Add platforms first.")
-        return
-
-    rates = InterestRateVM.get_rates(portfolio_id)
-    # Filter rates to shown platforms only
-    shown_ids = set(int(x) for x in platforms["id"].tolist())
-    rates = rates[rates["platform_id"].apply(lambda x: int(x) in shown_ids)]
-
-    # ── Edit rates ──────────────────────────────────────────────────
-    with st.form("interest_rates_form"):
-        entries = []
-        for _, r in rates.iterrows():
-            st.markdown(f"**{r['platform']}**")
-            est = st.number_input(
-                "Estimated Rate (%)",
-                value=float(r["estimated_rate"]) * 100,
-                step=0.1,
-                format="%.2f",
-                key=f"ir_est_{r['platform_id']}",
-            )
-            entries.append((int(r["platform_id"]), est / 100))
-
-        if st.form_submit_button("💾 Save Rates"):
-            for pid, est in entries:
-                InterestRateVM.save_rate(int(pid), est)
-            st.success("Interest rates saved!")
-            st.rerun()
-
-    # ── Comparison chart ────────────────────────────────────────────
-    rates = InterestRateVM.get_rates(portfolio_id)  # refresh
-    rates = rates[rates["platform_id"].apply(lambda x: int(x) in shown_ids)]
-    if not rates.empty and rates["estimated_rate"].sum() > 0:
-        chart_df = rates[rates["estimated_rate"] > 0].copy()
-        chart_df["est_pct"] = chart_df["estimated_rate"] * 100
-
-        fig = px.bar(
-            chart_df,
-            x="platform",
-            y="est_pct",
-            title="Estimated Interest Rates by Platform",
-            labels={"platform": "Platform", "est_pct": "Rate (%)"},
-            text="est_pct",
-        )
-        fig.update_traces(texttemplate="%{text:.2f}%", textposition="auto")
-        st.plotly_chart(fig, width="stretch")
-
-        # Summary stats
-        col1, col2, col3 = st.columns(3)
-        active_rates = chart_df["est_pct"]
-        col1.metric("Min Rate", f"{active_rates.min():.2f}%")
-        col2.metric("Avg Rate", f"{active_rates.mean():.2f}%")
-        col3.metric("Max Rate", f"{active_rates.max():.2f}%")
-
-    # ── Auto-Score Equation ─────────────────────────────────────────
-    _render_auto_interest_rate(portfolio_id, platforms)
-
-
-# ---------------------------------------------------------------------------
 # Country Status
 # ---------------------------------------------------------------------------
 
 def _status_color_html(status: str) -> str:
     """Coloured dot + status name as HTML."""
     color = COUNTRY_STATUS_COLORS.get(status, "#888")
-    return f'<span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:{color};margin-right:4px"></span>{status}'
+    return (
+        f'<span style="display:inline-block;width:12px;height:12px;'
+        f'border-radius:50%;background:{color};margin-right:4px"></span>{status}'
+    )
 
 
 def render_country_status(portfolio_id: int) -> None:
@@ -226,14 +146,76 @@ def render_country_status(portfolio_id: int) -> None:
     _render_auto_country(portfolio_id, platforms)
 
 
+# ---------------------------------------------------------------------------
+# Inherit from Originators (per-platform)
+# ---------------------------------------------------------------------------
+
+def _render_inherit_mode(
+    pid: int, portfolio_id: int, platform_name: str,
+) -> None:
+    """Show country allocation derived from loan originator entries for one platform."""
+    st.info(
+        "🔗 **Inherit mode** — country allocation for this platform is computed "
+        "from originator data. Edit originators on the Loan Originators page."
+    )
+
+    alloc = CountryAllocationVM.compute_allocation(pid)
+    if alloc.empty:
+        st.warning("No originator data. Add originators on the Loan Originators page.")
+        return
+
+    rows = []
+    for _, row in alloc.iterrows():
+        rows.append({
+            "Country": country_flag(row["country"]),
+            "Allocation %": f"{row['pct']:.1f}%",
+        })
+    rows.sort(key=lambda r: -float(r["Allocation %"].rstrip("%")))
+    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+
+
+# ---------------------------------------------------------------------------
+# Country Allocation
+# ---------------------------------------------------------------------------
+
 def _render_country_allocation(portfolio_id: int, platforms: pd.DataFrame) -> None:
     """Per-platform country allocation: status filter → equal/manual mode."""
     st.subheader("Country Allocation")
+
+    # Check if inherit mode is available (loan_originator criterion exists)
+    criteria = CriteriaVM.list_criteria(portfolio_id)
+    has_originator_crit = not criteria[
+        (criteria["is_special"] == True) & (criteria["special_type"] == "loan_originator")  # noqa: E712
+    ].empty
 
     sel = st.selectbox("Platform", platforms["name"].tolist(), key="ca_plat")
     plat_row = platforms[platforms["name"] == sel].iloc[0]
     pid = int(plat_row["id"])
 
+    # ── Allocation mode ─────────────────────────────────────────────
+    st.markdown("#### Allocation Mode")
+
+    current_mode = CountryAllocationVM.get_mode(pid)
+    MODES = ["equal", "manual"]
+    if has_originator_crit:
+        MODES.append("inherit")
+    mode = st.radio(
+        "Mode",
+        MODES,
+        index=MODES.index(current_mode) if current_mode in MODES else 0,
+        format_func=lambda m: {"equal": "Equal", "manual": "Manual", "inherit": "🔗 Inherit from Originators"}.get(m, m),
+        horizontal=True,
+        key=f"ca_mode_{pid}",
+    )
+    if mode != current_mode:
+        CountryAllocationVM.set_mode(pid, mode)
+
+    # ── Inherit mode: show derived country data ─────────────────
+    if mode == "inherit":
+        _render_inherit_mode(pid, portfolio_id, sel)
+        return
+
+    # ── Normal modes need country statuses ──────────────────────
     countries = CountryStatusVM.list_statuses(pid)
     if countries.empty:
         st.info("No countries for this platform.")
@@ -244,24 +226,22 @@ def _render_country_allocation(portfolio_id: int, platforms: pd.DataFrame) -> No
     countries = countries.sort_values("_prio")
 
     # ── Step 1: Status filter ──────────────────────────────────────
-    st.markdown("#### 1. Include / Exclude Statuses")
+    st.markdown("#### Include / Exclude Statuses")
     st.caption("Running is always included. All other statuses are excluded by default.")
 
     present_statuses = sorted(
         set(countries["status"].tolist()), key=country_status_priority
     )
     non_running = [s for s in present_statuses if s != "Running"]
-    excluded = set(CountryAllocationVM.get_excluded_statuses(pid))
-
-    # On first visit (no saved exclusions yet) default to excluding everything
-    # except Running.
-    if not excluded and non_running:
+    excluded_list = CountryAllocationVM.get_excluded_statuses(pid)
+    if excluded_list is None:
         excluded = set(non_running)
+    else:
+        excluded = set(excluded_list)
 
     with st.form(f"ca_status_filter_{pid}"):
         new_included: list[str] = []
         for s in non_running:
-            color = COUNTRY_STATUS_COLORS.get(s, "#888")
             cnt = int((countries["status"] == s).sum())
             if st.checkbox(
                 f"Include **{s}** ({cnt} {'country' if cnt == 1 else 'countries'})",
@@ -277,9 +257,11 @@ def _render_country_allocation(portfolio_id: int, platforms: pd.DataFrame) -> No
             st.rerun()
 
     # Determine included countries for the remainder of the UI
-    excluded_now = set(CountryAllocationVM.get_excluded_statuses(pid))
-    if not excluded_now and non_running:
+    excluded_list_now = CountryAllocationVM.get_excluded_statuses(pid)
+    if excluded_list_now is None:
         excluded_now = set(non_running)
+    else:
+        excluded_now = set(excluded_list_now)
     excluded_now.discard("Running")
     included = countries[~countries["status"].isin(excluded_now)]
     excluded_df = countries[countries["status"].isin(excluded_now)]
@@ -293,21 +275,7 @@ def _render_country_allocation(portfolio_id: int, platforms: pd.DataFrame) -> No
         st.warning("No countries included — adjust the status filter above.")
         return
 
-    # ── Step 2: Allocation mode ────────────────────────────────────
-    st.markdown("#### 2. Allocation Mode")
-
-    current_mode = CountryAllocationVM.get_mode(pid)
-    MODES = ["equal", "manual"]
-    mode = st.radio(
-        "Mode",
-        MODES,
-        index=MODES.index(current_mode) if current_mode in MODES else 0,
-        horizontal=True,
-        key=f"ca_mode_{pid}",
-    )
-    if mode != current_mode:
-        CountryAllocationVM.set_mode(pid, mode)
-
+    # ── Apply allocation mode ──────────────────────────────────────
     if mode == "manual":
         _render_manual_mode(pid, portfolio_id, included, excluded_df)
     else:
@@ -425,15 +393,28 @@ def _render_equal_mode(included: pd.DataFrame, excluded: pd.DataFrame) -> None:
     st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
 
+# ---------------------------------------------------------------------------
+# Distribution statistics
+# ---------------------------------------------------------------------------
+
 def _render_distribution_stats(portfolio_id: int, platforms: pd.DataFrame) -> None:
     """Show distribution of funds among countries across the portfolio."""
     st.subheader("Country Fund Distribution")
 
-    # Get latest balances and country allocations
     latest = BalanceVM.get_latest_balances(portfolio_id)
     if latest.empty:
         st.info("No balance data yet.")
         return
+
+    # ── Status filter (like Rebalancing) ────────────────────────
+    other_statuses = [s for s in COUNTRY_STATUSES if s != "Running"]
+    selected_others = st.multiselect(
+        "Include in distribution (Running is always included)",
+        other_statuses,
+        default=[],
+        key="country_dist_statuses",
+    )
+    include_statuses: set[str] = {"Running"} | set(selected_others)
 
     country_funds: dict[str, float] = {}
 
@@ -450,9 +431,18 @@ def _render_distribution_stats(portfolio_id: int, platforms: pd.DataFrame) -> No
         if alloc.empty:
             continue
 
+        # Look up country statuses for this platform
+        statuses = CountryStatusVM.list_statuses(pid)
+        status_map = dict(zip(statuses["country"], statuses["status"])) if not statuses.empty else {}
+
         for _, a in alloc.iterrows():
             country = a["country"]
             pct = float(a["pct"])
+            if pct <= 0:
+                continue
+            # Filter by selected statuses
+            if status_map.get(country, "Running") not in include_statuses:
+                continue
             amount = balance * pct / 100.0
             country_funds[country] = country_funds.get(country, 0) + amount
 
@@ -469,7 +459,6 @@ def _render_distribution_stats(portfolio_id: int, platforms: pd.DataFrame) -> No
     fund_df["Pct"] = (fund_df["Amount"] / total * 100).round(2) if total > 0 else 0
     fund_df["Amount €"] = fund_df["Amount"].apply(lambda x: f"€{x:,.2f}")
 
-    # Pie chart
     fig = px.pie(
         fund_df, values="Amount", names="Country",
         title="Portfolio-wide Country Distribution",
@@ -478,7 +467,6 @@ def _render_distribution_stats(portfolio_id: int, platforms: pd.DataFrame) -> No
     fig.update_traces(textposition="inside", textinfo="percent+label")
     st.plotly_chart(fig, width="stretch")
 
-    # Table
     st.dataframe(
         fund_df[["Country", "Amount €", "Pct"]].rename(columns={"Pct": "%"}),
         width="stretch",
@@ -493,7 +481,6 @@ def _render_overview(portfolio_id: int) -> None:
         st.info("No country statuses recorded yet.")
         return
 
-    # Add colour-coded HTML for status display
     all_statuses = all_statuses.copy()
     all_statuses["_prio"] = all_statuses["status"].apply(country_status_priority)
     all_statuses = all_statuses.sort_values(["_prio", "country"])
@@ -508,7 +495,6 @@ def _render_overview(portfolio_id: int) -> None:
         hide_index=True,
     )
 
-    # Pivot: country × platform → status
     pivot = all_statuses.pivot_table(
         index="Country",
         columns="platform",
@@ -520,58 +506,8 @@ def _render_overview(portfolio_id: int) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Auto-Score helpers (moved from Scoring page)
+# Auto-Score helper
 # ---------------------------------------------------------------------------
-
-
-def _render_auto_interest_rate(
-    portfolio_id: int, platforms: pd.DataFrame
-) -> None:
-    """Auto-score section for interest rate criterion."""
-    criteria = CriteriaVM.list_criteria(portfolio_id)
-    special = criteria[(criteria["is_special"] == True) & (criteria["special_type"] == "interest_rate")]  # noqa: E712
-    if special.empty:
-        return
-
-    st.divider()
-    st.subheader("Auto-Score Equation")
-    st.markdown(
-        "Variables: `rate` (platform rate), `min_rate`, `max_rate`, `avg_rate` (across active platforms). "
-        "Builtins: `min()`, `max()`, `abs()`."
-    )
-
-    eq, enabled = AutoScoreVM.get_equation(portfolio_id, "interest_rate")
-
-    col_eq, col_toggle = st.columns([4, 1])
-    new_eq = col_eq.text_input(
-        "Equation",
-        value=eq,
-        key="auto_eq_interest",
-        help="Python expression. Result clamped to [0, 10].",
-    )
-    new_enabled = col_toggle.checkbox("Enabled", value=enabled, key="auto_en_interest")
-
-    c1, c2 = st.columns(2)
-    if c1.button("💾 Save Equation", key="save_eq_interest"):
-        AutoScoreVM.save_equation(portfolio_id, "interest_rate", new_eq, new_enabled)
-        st.success("Interest rate equation saved!")
-
-    if c2.button("🔄 Apply & Write Scores", key="apply_interest", disabled=not new_enabled):
-        crit_row = special.iloc[0]
-        crit_id = int(crit_row["id"])
-        scores = AutoScoreVM.compute_interest_rate_scores(portfolio_id, new_eq)
-        if not scores:
-            st.warning("No interest rate data found for Running platforms.")
-        else:
-            for pid, score in scores.items():
-                ScoringVM.save_score(pid, crit_id, score)
-            st.success(f"Applied interest rate scores to {len(scores)} platforms.")
-            preview_rows = []
-            plat_map = dict(zip(platforms["id"].astype(int), platforms["name"]))
-            for pid, score in sorted(scores.items(), key=lambda x: -x[1]):
-                preview_rows.append({"Platform": plat_map.get(pid, str(pid)), "Score": round(score, 2)})
-            st.dataframe(pd.DataFrame(preview_rows), width="stretch", hide_index=True)
-
 
 def _render_auto_country(
     portfolio_id: int, platforms: pd.DataFrame

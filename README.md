@@ -17,24 +17,34 @@ A **Streamlit** web application for managing P2P lending investment portfolios u
 - **Rebalancing dashboard** — current vs target pie charts, deviation bar chart, KPI metrics, off-budget pockets
 - **Balance tracking** — snapshots per platform & date, history with deletion
 - **Interest rate comparison** — bar chart with min/avg/max stats
-- **Country status management** — 11 priority-ordered statuses, color-coded indicators, country flags, per-platform allocation (manual or equal), fund distribution chart, cross-platform status matrix
-- **Auto-score equations** — configurable formulas for interest-rate and country-count criteria
+- **Loan originator tracking** — per-platform originators with country, loan count, 11 priority-ordered statuses; allocation (manual or equal)
+- **Country status management** — color-coded indicators, country flags, per-platform allocation (manual or equal), fund distribution chart, cross-platform status matrix; country inheritance from originator data
+- **Auto-score equations** — configurable formulas for interest-rate, country-count, and originator-count criteria
 
 ## Architecture
 
 ```
+pb-data/                             # DuckDB file (cloud-sync friendly)
 app/
-├── main.py                      # Entry point + st.navigation page routing
+├── main.py                          # Entry point + st.navigation page routing
 ├── models/
-│   ├── database.py              # DuckDB connection (@st.cache_resource) + schema
-│   └── repositories.py          # All SQL queries (data access layer)
+│   ├── database.py                  # DuckDB connection (@st.cache_resource) + schema
+│   └── repositories.py              # All SQL queries (data access layer)
 ├── viewmodels/
-│   ├── portfolio_vm.py          # Portfolio & Platform CRUD
-│   ├── mcda_vm.py               # Criteria, weighting, scoring, allocation
-│   └── balance_vm.py            # Balances, pockets, rates, countries, auto-score
+│   ├── portfolio_vm.py              # Portfolio & Platform CRUD
+│   ├── mcda_vm.py                   # Criteria, weighting, scoring, allocation
+│   └── balance_vm.py                # Balances, pockets, rates, countries, originators, auto-score
 └── views/
-    ├── components/common.py     # Shared helpers (badges, selectors, flags)
-    └── pages/                   # Streamlit page modules
+    ├── components/common.py         # Shared helpers (badges, selectors, flags)
+    └── pages/                       # Streamlit page modules
+        ├── dashboard.py
+        ├── portfolios.py
+        ├── criteria.py
+        ├── scoring.py
+        ├── balances.py
+        ├── interest_rates.py
+        ├── countries.py
+        └── loan_originators.py
 ```
 
 **MVVM pattern**: Models (DuckDB) → ViewModels (business logic) → Views (Streamlit UI).
@@ -47,6 +57,7 @@ All SQL lives in `repositories.py`; viewmodels contain only business logic.
 - **[Pandas](https://pandas.pydata.org/)** — Data manipulation
 - **[Plotly](https://plotly.com/python/)** — Interactive charts
 - **[NumPy](https://numpy.org/)** — Numerical operations
+- **[pycountry](https://github.com/pycountry/pycountry)** — Country name → flag resolution
 
 ## Getting Started
 
@@ -70,3 +81,4 @@ The app opens at [http://localhost:8501](http://localhost:8501).
 5. **Record balances** and **view the Dashboard** for deviation analysis
 
 ## License
+MIT License. See [LICENSE](LICENSE) for details.

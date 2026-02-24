@@ -7,7 +7,7 @@ import pandas as pd
 from app.models.repositories import (
     BalanceRepo, PocketRepo, LoanOriginatorRepo,
     InterestRateRepo, CountryStatusRepo, CountryAllocationRepo,
-    AutoScoreRepo,
+    OriginatorAllocationRepo, AutoScoreRepo,
 )
 from app.viewmodels.mcda_vm import ScoringVM
 
@@ -132,15 +132,31 @@ class LoanOriginatorVM:
         return LoanOriginatorRepo.list_for_platform(platform_id)
 
     @staticmethod
+    def list_all_for_portfolio(portfolio_id: int) -> pd.DataFrame:
+        return LoanOriginatorRepo.list_all_for_portfolio(portfolio_id)
+
+    @staticmethod
     def save_originator(
         platform_id: int, country: str, originator_name: str,
-        num_loans: float, note: str = "",
+        num_loans: float, status: str = "Running", note: str = "",
     ) -> None:
-        LoanOriginatorRepo.save(platform_id, country, originator_name, num_loans, note)
+        LoanOriginatorRepo.save(platform_id, country, originator_name, num_loans, status, note)
+
+    @staticmethod
+    def update_originator(
+        originator_id: int, country: str, originator_name: str,
+        num_loans: float, status: str = "Running", note: str = "",
+    ) -> None:
+        LoanOriginatorRepo.update(originator_id, country, originator_name, num_loans, status, note)
 
     @staticmethod
     def delete_originator(originator_id: int) -> None:
         LoanOriginatorRepo.delete(originator_id)
+
+    @staticmethod
+    def ensure_default(platform_id: int, platform_name: str) -> None:
+        """Ensure the platform has at least one originator (itself at 100%)."""
+        LoanOriginatorRepo.ensure_default(platform_id, platform_name)
 
 
 class InterestRateVM:
@@ -202,12 +218,14 @@ class CountryAllocationVM:
         CountryAllocationRepo.set_mode(platform_id, mode)
 
     @staticmethod
-    def get_excluded_statuses(platform_id: int) -> list[str]:
-        """Return list of excluded country statuses."""
+    def get_excluded_statuses(platform_id: int) -> list[str] | None:
+        """Return list of excluded country statuses, or None if never configured."""
         raw = CountryAllocationRepo.get_excluded_statuses_raw(platform_id)
+        if raw is None:
+            return None          # no row → never configured
         if raw:
             return [s.strip() for s in raw.split(",") if s.strip()]
-        return []
+        return []                # row exists, empty → explicitly include all
 
     @staticmethod
     def set_excluded_statuses(platform_id: int, excluded: list[str]) -> None:
@@ -232,7 +250,12 @@ class CountryAllocationVM:
         countries = CountryStatusRepo.list_statuses(platform_id)
         if countries.empty:
             return countries
-        excluded = set(CountryAllocationVM.get_excluded_statuses(platform_id))
+        excluded_list = CountryAllocationVM.get_excluded_statuses(platform_id)
+        if excluded_list is None:
+            non_running = set(countries[countries["status"] != "Running"]["status"])
+            excluded = non_running
+        else:
+            excluded = set(excluded_list)
         excluded.discard("Running")
         return countries[~countries["status"].isin(excluded)]
 
@@ -240,16 +263,44 @@ class CountryAllocationVM:
     def compute_allocation(platform_id: int) -> pd.DataFrame:
         """Compute country allocation for a platform.
 
-        1. Filter countries by excluded statuses.
-        2. Apply equal or manual allocation to the remaining ones.
+        1. If mode == 'inherit', derive from originator data.
+        2. Otherwise filter countries by excluded statuses.
+        3. Apply equal or manual allocation to the remaining ones.
 
         Returns DataFrame with columns: country, pct
         """
+        mode = CountryAllocationVM.get_mode(platform_id)
+
+        # ── Inherit from originators ─────────────────────────────
+        if mode == "inherit":
+            origs = LoanOriginatorRepo.list_for_platform(platform_id)
+            if origs.empty:
+                return pd.DataFrame(columns=["country", "pct"])
+
+            # Use originator allocation pcts to weight countries
+            orig_alloc = OriginatorAllocationVM.compute_allocation(platform_id)
+            country_pct: dict[str, float] = {}
+            for _, row in orig_alloc.iterrows():
+                c = row["country"].strip() if row["country"] else "Unknown"
+                if not c:
+                    c = "Unknown"
+                country_pct[c] = country_pct.get(c, 0) + float(row["pct"])
+            return pd.DataFrame([
+                {"country": c, "pct": p} for c, p in country_pct.items()
+            ])
+
+        # ── Normal mode (equal / manual) ─────────────────────────
         all_countries = CountryStatusRepo.list_statuses(platform_id)
         if all_countries.empty:
             return pd.DataFrame(columns=["country", "pct"])
 
-        excluded = set(CountryAllocationVM.get_excluded_statuses(platform_id))
+        excluded_list = CountryAllocationVM.get_excluded_statuses(platform_id)
+        if excluded_list is None:
+            # Never configured → default: exclude all non-Running
+            non_running = set(all_countries[all_countries["status"] != "Running"]["status"])
+            excluded = non_running
+        else:
+            excluded = set(excluded_list)
         excluded.discard("Running")
         included = all_countries[~all_countries["status"].isin(excluded)]
         mode = CountryAllocationVM.get_mode(platform_id)
@@ -283,12 +334,134 @@ class CountryAllocationVM:
         return pd.DataFrame(result)
 
 
+def _orig_key(name: str, country: str) -> str:
+    """Composite key for an originator (name + country).
+
+    Two originators may share the same name but differ by country,
+    so the allocation key must incorporate both.
+    """
+    return f"{name}|{country}"
+
+
+class OriginatorAllocationVM:
+    """Manage per-platform originator allocation mode and percentages.
+
+    Mirrors CountryAllocationVM but for loan originators.
+    """
+
+    @staticmethod
+    def get_mode(platform_id: int) -> str:
+        mode = OriginatorAllocationRepo.get_mode_raw(platform_id)
+        return "equal" if mode is None else mode
+
+    @staticmethod
+    def set_mode(platform_id: int, mode: str) -> None:
+        OriginatorAllocationRepo.set_mode(platform_id, mode)
+
+    @staticmethod
+    def get_excluded_statuses(platform_id: int) -> list[str] | None:
+        """Return excluded statuses, or None if never configured."""
+        raw = OriginatorAllocationRepo.get_excluded_statuses_raw(platform_id)
+        if raw is None:
+            return None
+        if raw:
+            return [s.strip() for s in raw.split(",") if s.strip()]
+        return []
+
+    @staticmethod
+    def set_excluded_statuses(platform_id: int, excluded: list[str]) -> None:
+        OriginatorAllocationRepo.set_excluded_statuses(platform_id, ",".join(excluded))
+
+    @staticmethod
+    def get_pcts(platform_id: int) -> pd.DataFrame:
+        return OriginatorAllocationRepo.get_pcts(platform_id)
+
+    @staticmethod
+    def save_pct(
+        platform_id: int, originator_key: str, pct: float, value: float = 0.0,
+    ) -> None:
+        OriginatorAllocationRepo.save_pct(platform_id, originator_key, pct, value)
+
+    @staticmethod
+    def included_originators(platform_id: int) -> pd.DataFrame:
+        """Return only originators whose status is NOT excluded."""
+        origs = LoanOriginatorRepo.list_for_platform(platform_id)
+        if origs.empty:
+            return origs
+        excluded_list = OriginatorAllocationVM.get_excluded_statuses(platform_id)
+        if excluded_list is None:
+            non_running = set(origs[origs["status"] != "Running"]["status"])
+            excluded = non_running
+        else:
+            excluded = set(excluded_list)
+        excluded.discard("Running")
+        return origs[~origs["status"].isin(excluded)]
+
+    @staticmethod
+    def compute_allocation(platform_id: int) -> pd.DataFrame:
+        """Compute originator allocation for a platform.
+
+        Returns DataFrame with columns: originator_name, country, originator_key, pct
+        """
+        all_origs = LoanOriginatorRepo.list_for_platform(platform_id)
+        if all_origs.empty:
+            return pd.DataFrame(columns=["originator_name", "country", "originator_key", "pct"])
+
+        excluded_list = OriginatorAllocationVM.get_excluded_statuses(platform_id)
+        if excluded_list is None:
+            non_running = set(all_origs[all_origs["status"] != "Running"]["status"])
+            excluded = non_running
+        else:
+            excluded = set(excluded_list)
+        excluded.discard("Running")
+        included = all_origs[~all_origs["status"].isin(excluded)]
+        mode = OriginatorAllocationVM.get_mode(platform_id)
+
+        # Build included set using composite key
+        included_keys = set(
+            _orig_key(r["originator_name"], r["country"])
+            for _, r in included.iterrows()
+        )
+
+        result = []
+
+        if mode == "manual" and not included.empty:
+            manual = OriginatorAllocationRepo.get_pcts(platform_id)
+            pct_map = (
+                dict(zip(manual["originator_key"], manual["pct"]))
+                if not manual.empty
+                else {}
+            )
+            for _, row in all_origs.iterrows():
+                key = _orig_key(row["originator_name"], row["country"])
+                result.append({
+                    "originator_name": row["originator_name"],
+                    "country": row["country"],
+                    "originator_key": key,
+                    "pct": float(pct_map.get(key, 0)) if key in included_keys else 0.0,
+                })
+        else:
+            n = len(included)
+            eq_pct = 100.0 / n if n > 0 else 0.0
+            for _, row in all_origs.iterrows():
+                key = _orig_key(row["originator_name"], row["country"])
+                result.append({
+                    "originator_name": row["originator_name"],
+                    "country": row["country"],
+                    "originator_key": key,
+                    "pct": eq_pct if key in included_keys else 0.0,
+                })
+
+        return pd.DataFrame(result)
+
+
 class AutoScoreVM:
     """Manage and compute auto-score equations for special criteria."""
 
     DEFAULT_EQUATIONS = {
         "interest_rate": "max(0, min(10, 5 + (10 / (max_rate - min_rate)) * (rate - avg_rate)))",
         "country": "min(10, count * 1.5)",
+        "loan_originator": "min(10, count * 2.0)",
     }
 
     @staticmethod
@@ -367,7 +540,37 @@ class AutoScoreVM:
         for _, plat in running.iterrows():
             pid = int(plat["id"])
             included = CountryAllocationVM.included_countries(pid)
-            count = len(included)
+            # Always exclude "Defaulted" from count
+            count = len(included[included["status"] != "Defaulted"])
+            try:
+                score = eval(equation, {"__builtins__": {}}, {
+                    "count": count, "min": min, "max": max, "abs": abs,
+                })
+                results[pid] = float(max(0, min(10, score)))
+            except Exception:
+                results[pid] = 0.0
+        return results
+
+    @staticmethod
+    def compute_originator_scores(
+        portfolio_id: int, equation: str,
+    ) -> dict[int, float]:
+        """Compute originator count scores for all Running platforms.
+
+        Returns {platform_id: score}.
+        Available variables: count (number of included originators).
+        """
+        from app.viewmodels.portfolio_vm import PortfolioVM
+
+        platforms = PortfolioVM.list_platforms(portfolio_id, include_inactive=False)
+        running = platforms[platforms["status"] == "Running"]
+
+        results = {}
+        for _, plat in running.iterrows():
+            pid = int(plat["id"])
+            included = OriginatorAllocationVM.included_originators(pid)
+            # Always exclude "Defaulted" from count
+            count = len(included[included["status"] != "Defaulted"])
             try:
                 score = eval(equation, {"__builtins__": {}}, {
                     "count": count, "min": min, "max": max, "abs": abs,

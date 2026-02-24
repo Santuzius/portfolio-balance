@@ -23,7 +23,10 @@ get_connection()
 
 from app.views.components.common import portfolio_selector
 from app.viewmodels.mcda_vm import CriteriaVM
-from app.views.pages import dashboard, portfolios, criteria, scoring, balances, special_criteria
+from app.views.pages import (
+    dashboard, portfolios, criteria, scoring, balances,
+    interest_rates, countries, loan_originators,
+)
 
 
 st.set_page_config(
@@ -60,11 +63,15 @@ if portfolio_id is not None:
         _special = _crit_df[_crit_df["is_special"] == True]  # noqa: E712
         if not _special[_special["special_type"] == "interest_rate"].empty:
             pages.append(
-                st.Page(special_criteria.page_interest_rates, title="Interest Rates", icon="📈", url_path="interest-rates"),
+                st.Page(interest_rates.page, title="Interest Rates", icon="📈", url_path="interest-rates"),
+            )
+        if not _special[_special["special_type"] == "loan_originator"].empty:
+            pages.append(
+                st.Page(loan_originators.page, title="Loan Originators", icon="🏦", url_path="loan-originators"),
             )
         if not _special[_special["special_type"] == "country"].empty:
             pages.append(
-                st.Page(special_criteria.page_countries, title="Countries", icon="🌍", url_path="countries"),
+                st.Page(countries.page, title="Countries", icon="🌍", url_path="countries"),
             )
 
 nav = st.navigation(pages)

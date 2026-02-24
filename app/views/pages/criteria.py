@@ -7,8 +7,13 @@ import pandas as pd
 from app.viewmodels.mcda_vm import CriteriaVM
 
 
-SPECIAL_TYPES = [None, "interest_rate", "country"]
-SPECIAL_LABELS = {"interest_rate": "Interest Rate", "country": "Country", None: "None"}
+SPECIAL_TYPES = [None, "interest_rate", "country", "loan_originator"]
+SPECIAL_LABELS = {
+    "interest_rate": "Interest Rate",
+    "country": "Country",
+    "loan_originator": "Loan Originator",
+    None: "None",
+}
 
 
 def page() -> None:
@@ -49,7 +54,7 @@ def _render_criteria(portfolio_id: int) -> None:
             order = st.number_input("Display Order", value=len(criteria) + 1, min_value=1)
             sp_type = st.selectbox(
                 "Special Type",
-                [None, "interest_rate", "country"],
+                SPECIAL_TYPES,
                 format_func=lambda x: SPECIAL_LABELS.get(x, "None"),
             )
             if st.form_submit_button("Add"):
@@ -77,8 +82,8 @@ def _render_criteria(portfolio_id: int) -> None:
                 ec_order = st.number_input("Order", value=int(c["display_order"]), key=f"ec_order_{c['id']}")
                 ec_type = st.selectbox(
                     "Type",
-                    [None, "interest_rate", "country"],
-                    index=[None, "interest_rate", "country"].index(c.get("special_type")),
+                    SPECIAL_TYPES,
+                    index=SPECIAL_TYPES.index(c.get("special_type")) if c.get("special_type") in SPECIAL_TYPES else 0,
                     format_func=lambda x: SPECIAL_LABELS.get(x, "None"),
                     key=f"ec_type_{c['id']}",
                 )

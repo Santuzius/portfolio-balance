@@ -26,6 +26,7 @@ COUNTRY_STATUSES = [
     "Low Supply Active",
     "Low Supply Inactive",
     "Risky",
+    "Defaulted",
     "Filtered Out",
 ]
 
@@ -40,6 +41,7 @@ COUNTRY_STATUS_COLORS: dict[str, str] = {
     "Low Supply Active":  "#ffc000",
     "Low Supply Inactive":"#ffd965",
     "Risky":              "#ff0000",
+    "Defaulted":          "#800000",
     "Filtered Out":       "#a5a5a5",
 }
 

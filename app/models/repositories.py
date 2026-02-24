@@ -290,6 +290,7 @@ class PlatformRepo:
         con = get_connection()
         pid = int(platform_id)
         for tbl in [
+            "originator_allocation_pcts", "originator_allocations",
             "country_allocation_pcts", "country_allocations",
             "balance_snapshots", "loan_originators", "off_budget_pockets",
             "interest_rates", "country_statuses", "scores",
@@ -627,24 +628,53 @@ class LoanOriginatorRepo:
     @staticmethod
     def list_for_platform(platform_id: int) -> pd.DataFrame:
         return get_connection().execute(
-            """SELECT id, country, originator_name, num_loans, note
-               FROM loan_originators WHERE platform_id = ? ORDER BY country""",
+            """SELECT id, country, originator_name, num_loans, status, note
+               FROM loan_originators WHERE platform_id = ?
+               ORDER BY originator_name""",
             [int(platform_id)],
+        ).fetchdf()
+
+    @staticmethod
+    def list_all_for_portfolio(portfolio_id: int) -> pd.DataFrame:
+        """All originators across all platforms in a portfolio."""
+        return get_connection().execute(
+            """SELECT lo.id, p.name AS platform, lo.platform_id,
+                      lo.country, lo.originator_name, lo.num_loans,
+                      lo.status, lo.note
+               FROM loan_originators lo
+               JOIN platforms p ON lo.platform_id = p.id
+               WHERE p.portfolio_id = ?
+               ORDER BY lo.originator_name, lo.country""",
+            [int(portfolio_id)],
         ).fetchdf()
 
     @staticmethod
     def save(
         platform_id: int, country: str, originator_name: str,
-        num_loans: float, note: str = "",
+        num_loans: float, status: str = "Running", note: str = "",
     ) -> None:
         get_connection().execute(
             """INSERT INTO loan_originators
-               (platform_id, country, originator_name, num_loans, note)
-               VALUES (?, ?, ?, ?, ?)
+               (platform_id, country, originator_name, num_loans, status, note)
+               VALUES (?, ?, ?, ?, ?, ?)
                ON CONFLICT (platform_id, country, originator_name)
                DO UPDATE SET num_loans = excluded.num_loans,
+                            status = excluded.status,
                             note = excluded.note""",
-            [int(platform_id), country, originator_name, float(num_loans), note],
+            [int(platform_id), country, originator_name, float(num_loans), status, note],
+        )
+
+    @staticmethod
+    def update(
+        originator_id: int, country: str, originator_name: str,
+        num_loans: float, status: str, note: str = "",
+    ) -> None:
+        get_connection().execute(
+            """UPDATE loan_originators
+               SET country = ?, originator_name = ?, num_loans = ?,
+                   status = ?, note = ?
+               WHERE id = ?""",
+            [country, originator_name, float(num_loans), status, note, int(originator_id)],
         )
 
     @staticmethod
@@ -652,6 +682,21 @@ class LoanOriginatorRepo:
         get_connection().execute(
             "DELETE FROM loan_originators WHERE id = ?", [int(originator_id)]
         )
+
+    @staticmethod
+    def ensure_default(platform_id: int, platform_name: str) -> None:
+        """Ensure the platform has at least one originator (itself at 100%)."""
+        existing = get_connection().execute(
+            "SELECT COUNT(*) FROM loan_originators WHERE platform_id = ?",
+            [int(platform_id)],
+        ).fetchone()[0]
+        if existing == 0:
+            get_connection().execute(
+                """INSERT INTO loan_originators
+                   (platform_id, country, originator_name, num_loans, status, note)
+                   VALUES (?, '', ?, 100, 'Running', '')""",
+                [int(platform_id), platform_name],
+            )
 
 
 # ── Interest Rates ──────────────────────────────────────────────────
@@ -768,12 +813,15 @@ class CountryAllocationRepo:
         )
 
     @staticmethod
-    def get_excluded_statuses_raw(platform_id: int) -> str:
+    def get_excluded_statuses_raw(platform_id: int) -> str | None:
+        """Return raw CSV of excluded statuses, or None if no row exists."""
         row = get_connection().execute(
             "SELECT excluded_statuses FROM country_allocations WHERE platform_id = ?",
             [int(platform_id)],
         ).fetchone()
-        return row[0] if row and row[0] else ""
+        if row is None:
+            return None
+        return row[0] or ""
 
     @staticmethod
     def set_excluded_statuses(platform_id: int, excluded_csv: str) -> None:
@@ -803,6 +851,71 @@ class CountryAllocationRepo:
                ON CONFLICT (platform_id, country)
                DO UPDATE SET pct = excluded.pct, value = excluded.value""",
             [int(platform_id), country, float(pct), float(value)],
+        )
+
+
+# ── Originator Allocation ──────────────────────────────────────────
+
+
+class OriginatorAllocationRepo:
+
+    @staticmethod
+    def get_mode_raw(platform_id: int) -> str | None:
+        row = get_connection().execute(
+            "SELECT allocation_mode FROM originator_allocations WHERE platform_id = ?",
+            [int(platform_id)],
+        ).fetchone()
+        return row[0] if row else None
+
+    @staticmethod
+    def set_mode(platform_id: int, mode: str) -> None:
+        get_connection().execute(
+            """INSERT INTO originator_allocations (platform_id, allocation_mode)
+               VALUES (?, ?)
+               ON CONFLICT (platform_id)
+               DO UPDATE SET allocation_mode = excluded.allocation_mode""",
+            [int(platform_id), mode],
+        )
+
+    @staticmethod
+    def get_excluded_statuses_raw(platform_id: int) -> str | None:
+        """Return raw CSV of excluded statuses, or None if no row exists."""
+        row = get_connection().execute(
+            "SELECT excluded_statuses FROM originator_allocations WHERE platform_id = ?",
+            [int(platform_id)],
+        ).fetchone()
+        if row is None:
+            return None
+        return row[0] or ""
+
+    @staticmethod
+    def set_excluded_statuses(platform_id: int, excluded_csv: str) -> None:
+        get_connection().execute(
+            """INSERT INTO originator_allocations (platform_id, excluded_statuses)
+               VALUES (?, ?)
+               ON CONFLICT (platform_id)
+               DO UPDATE SET excluded_statuses = excluded.excluded_statuses""",
+            [int(platform_id), excluded_csv],
+        )
+
+    @staticmethod
+    def get_pcts(platform_id: int) -> pd.DataFrame:
+        return get_connection().execute(
+            "SELECT originator_key, pct, value FROM originator_allocation_pcts "
+            "WHERE platform_id = ? ORDER BY originator_key",
+            [int(platform_id)],
+        ).fetchdf()
+
+    @staticmethod
+    def save_pct(
+        platform_id: int, originator_key: str, pct: float, value: float = 0.0,
+    ) -> None:
+        get_connection().execute(
+            """INSERT INTO originator_allocation_pcts (platform_id, originator_key, pct, value)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT (platform_id, originator_key)
+               DO UPDATE SET pct = excluded.pct, value = excluded.value""",
+            [int(platform_id), originator_key, float(pct), float(value)],
         )
 
 
