@@ -41,7 +41,7 @@ def render(portfolio_id: int) -> None:
         _render_quick_entries(portfolio_id, criteria)
 
     with tab_detail:
-        platforms = PortfolioVM.list_platforms(portfolio_id, include_inactive=False)
+        platforms = PortfolioVM.list_platforms(portfolio_id, include_inactive=True)
         if platforms.empty:
             st.warning("Add platforms first (🗂️ Portfolios page).")
         else:
