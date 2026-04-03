@@ -9,6 +9,7 @@ import plotly.express as px
 from app.viewmodels.portfolio_vm import PortfolioVM
 from app.viewmodels.balance_vm import (
     CountryStatusVM, CountryAllocationVM, BalanceVM, AutoScoreVM,
+    LoanOriginatorVM, OriginatorAllocationVM,
 )
 from app.viewmodels.mcda_vm import CriteriaVM, ScoringVM
 from app.views.components.common import (
@@ -68,6 +69,13 @@ def render_country_status(portfolio_id: int) -> None:
         selected = st.selectbox("Select Platform", platforms["name"].tolist(), key="cs_plat")
         plat_row = platforms[platforms["name"] == selected].iloc[0]
         platform_id = int(plat_row["id"])
+
+        if CountryAllocationVM.get_mode(platform_id) == "inherit":
+            st.info(
+                "🔗 **Inherit mode** — country statuses for this platform are "
+                "inherited from its loan originators. Statuses below are not "
+                "used for allocation or distribution."
+            )
 
         statuses = CountryStatusVM.list_statuses(platform_id)
 
@@ -427,24 +435,46 @@ def _render_distribution_stats(portfolio_id: int, platforms: pd.DataFrame) -> No
         if balance <= 0:
             continue
 
-        alloc = CountryAllocationVM.compute_allocation(pid)
-        if alloc.empty:
-            continue
+        mode = CountryAllocationVM.get_mode(pid)
 
-        # Look up country statuses for this platform
-        statuses = CountryStatusVM.list_statuses(pid)
-        status_map = dict(zip(statuses["country"], statuses["status"])) if not statuses.empty else {}
-
-        for _, a in alloc.iterrows():
-            country = a["country"]
-            pct = float(a["pct"])
-            if pct <= 0:
+        if mode == "inherit":
+            # Inherit statuses from originators: filter at originator level
+            origs = LoanOriginatorVM.list_originators(pid)
+            if origs.empty:
                 continue
-            # Filter by selected statuses
-            if status_map.get(country, "Running") not in include_statuses:
+            orig_alloc = OriginatorAllocationVM.compute_allocation(pid)
+            if orig_alloc.empty:
                 continue
-            amount = balance * pct / 100.0
-            country_funds[country] = country_funds.get(country, 0) + amount
+            # Build originator_key → status lookup
+            orig_status = {
+                f"{r['originator_name']}|{r['country']}": r["status"]
+                for _, r in origs.iterrows()
+            }
+            for _, oa in orig_alloc.iterrows():
+                pct = float(oa["pct"])
+                if pct <= 0:
+                    continue
+                status = orig_status.get(oa["originator_key"], "Running")
+                if status not in include_statuses:
+                    continue
+                country = oa["country"].strip() or "Unknown"
+                amount = balance * pct / 100.0
+                country_funds[country] = country_funds.get(country, 0) + amount
+        else:
+            alloc = CountryAllocationVM.compute_allocation(pid)
+            if alloc.empty:
+                continue
+            statuses = CountryStatusVM.list_statuses(pid)
+            status_map = dict(zip(statuses["country"], statuses["status"])) if not statuses.empty else {}
+            for _, a in alloc.iterrows():
+                country = a["country"]
+                pct = float(a["pct"])
+                if pct <= 0:
+                    continue
+                if status_map.get(country, "Running") not in include_statuses:
+                    continue
+                amount = balance * pct / 100.0
+                country_funds[country] = country_funds.get(country, 0) + amount
 
     if not country_funds:
         st.info("No allocation data available.")
@@ -480,6 +510,22 @@ def _render_overview(portfolio_id: int) -> None:
     if all_statuses.empty:
         st.info("No country statuses recorded yet.")
         return
+
+    # Detect which platforms use inherit mode
+    all_plats = PortfolioVM.list_platforms(portfolio_id, include_inactive=True)
+    inherit_platforms: set[str] = set()
+    for _, p in all_plats.iterrows():
+        if CountryAllocationVM.get_mode(int(p["id"])) == "inherit":
+            inherit_platforms.add(p["name"])
+
+    if inherit_platforms:
+        names = ", ".join(sorted(inherit_platforms))
+        st.info(
+            f"🔗 **Inherit mode** active for: {names} — "
+            "country statuses for these platforms are inherited from their "
+            "loan originators. The statuses shown below are not used for "
+            "allocation or distribution on those platforms."
+        )
 
     all_statuses = all_statuses.copy()
     all_statuses["_prio"] = all_statuses["status"].apply(country_status_priority)
