@@ -431,22 +431,17 @@ def _render_distribution_stats(portfolio_id: int, platforms: pd.DataFrame) -> No
         if alloc.empty:
             continue
 
-        # In inherit mode, originator-level filtering already applied — skip country status filter
-        is_inherit = CountryAllocationVM.get_mode(pid) == "inherit"
-
-        if not is_inherit:
-            statuses = CountryStatusVM.list_statuses(pid)
-            status_map = dict(zip(statuses["country"], statuses["status"])) if not statuses.empty else {}
-        else:
-            status_map = {}
+        # Look up country statuses for this platform
+        statuses = CountryStatusVM.list_statuses(pid)
+        status_map = dict(zip(statuses["country"], statuses["status"])) if not statuses.empty else {}
 
         for _, a in alloc.iterrows():
             country = a["country"]
             pct = float(a["pct"])
             if pct <= 0:
                 continue
-            # Filter by selected statuses (skip for inherit mode)
-            if not is_inherit and status_map.get(country, "Running") not in include_statuses:
+            # Filter by selected statuses
+            if status_map.get(country, "Running") not in include_statuses:
                 continue
             amount = balance * pct / 100.0
             country_funds[country] = country_funds.get(country, 0) + amount
