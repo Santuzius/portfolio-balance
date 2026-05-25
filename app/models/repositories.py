@@ -266,6 +266,7 @@ class PlatformRepo:
         con = get_connection()
         pid = int(platform_id)
         dep_tables = [
+            "originator_allocation_pcts", "originator_allocations",
             "country_allocation_pcts", "country_allocations",
             "scores", "country_statuses", "interest_rates",
             "off_budget_pockets", "loan_originators", "balance_snapshots",
