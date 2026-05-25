@@ -539,9 +539,13 @@ class AutoScoreVM:
         results = {}
         for _, plat in running.iterrows():
             pid = int(plat["id"])
-            included = CountryAllocationVM.included_countries(pid)
-            # Always exclude "Defaulted" from count
-            count = len(included[included["status"] != "Defaulted"])
+            if CountryAllocationVM.get_mode(pid) == "inherit":
+                alloc = CountryAllocationVM.compute_allocation(pid)
+                count = int((alloc["pct"] > 0).sum()) if not alloc.empty else 0
+            else:
+                included = CountryAllocationVM.included_countries(pid)
+                # Always exclude "Defaulted" from count
+                count = len(included[included["status"] != "Defaulted"])
             try:
                 score = eval(equation, {"__builtins__": {}}, {
                     "count": count, "min": min, "max": max, "abs": abs,
